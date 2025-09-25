@@ -2,83 +2,73 @@ package com.example.ring;
 
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
-import akka.pattern.Patterns;
-import akka.util.Timeout;
-import scala.concurrent.Await;
-import scala.concurrent.Future;
+import akka.pattern.PatternsCS;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.CompletionStage;
 
 public class RingApp {
-    public static void main(String[] args) {
-        final int numNodes = 5;
-        boolean asynchronous = false;
-
+    public static void main(String[] args) throws Exception {
         ActorSystem system = ActorSystem.create("RingSystem");
 
-        // Create nodes (with unique node keys, fot now just "NodeKeyX")
-        List<ActorRef> nodes = new ArrayList<>();
-        for (int i = 0; i < numNodes; i++) {
-            String nodeKey = "NodeKey" + i;
-            nodes.add(system.actorOf(NodeActor.props(i, nodeKey), "node" + i));
-        }
+        // choose replication factor
+        final int replicationFactor = 3;
 
-        // add connections to build the ring
-        for (int i = 0; i < numNodes; i++) {
-            ActorRef current = nodes.get(i);
-            ActorRef next = nodes.get((i + 1) % numNodes);
-            current.tell(new Messages.SetNext(next), ActorRef.noSender());
-        }
+        // create manager
+        ActorRef manager = system.actorOf(RingManager.props(replicationFactor), "manager");
 
-        // Start ring demo
-        nodes.get(0).tell(new Messages.Start("asd123"), ActorRef.noSender());
+        // create a few nodes with keys 10,20,30,40 (unsigned keys)
+        manager.tell(new Messages.AddNode(10L), ActorRef.noSender());
+        manager.tell(new Messages.AddNode(20L), ActorRef.noSender());
+        manager.tell(new Messages.AddNode(30L), ActorRef.noSender());
+        manager.tell(new Messages.AddNode(40L), ActorRef.noSender());
 
-        // Put some data into node 2
-        nodes.get(2).tell(new Messages.Put("25", "rock123"), ActorRef.noSender());
-        nodes.get(2).tell(new Messages.Put("3", "iron"), ActorRef.noSender());
+        // small sleep so membership messages propagate (demo only)
+        Thread.sleep(500);
 
-        // testing both sync and async for demo, then exit
-        for (int i = 0; i < 2; i++) {
-            if (asynchronous) {
-                // Retrieve data from node 2
-                CompletionStage<Object> result = Patterns.ask(
-                        nodes.get(2),
-                        new Messages.Get("25"),
-                        Duration.ofSeconds(3)
-                );
+        // Put a data item with numeric key 15 -> should be stored on nodes 20,30,40
+        System.out.println("\n>>> put K=15 (key='t1' value='v15') via origin node 10");
+        manager.tell(new Messages.ManagerPut(10L, 15L, "t1", "v15"), ActorRef.noSender());
+        Thread.sleep(200);
 
-                result.whenComplete((resp, ex) -> {
-                    if (resp instanceof Messages.GetResponse) {
-                        Messages.GetResponse r = (Messages.GetResponse) resp;
-                        System.out.println("[ASYNC] Got from node2: " + r.key + "=" + r.value);
-                    }
-                    system.terminate();
-                });
-            } else {
-                try {
-                    Timeout timeout = Timeout.create(Duration.ofSeconds(3));
+        // Put a data item with numeric key 35 -> should be stored on nodes 40,10,20 (wrap-around)
+        System.out.println("\n>>> put K=35 (key='t2' value='v35') via origin node 30");
+        manager.tell(new Messages.ManagerPut(30L, 35L, "t2", "v35"), ActorRef.noSender());
+        Thread.sleep(200);
 
-                    Future<Object> future = Patterns.ask(
-                            nodes.get(2),
-                            new Messages.Get("3"),
-                            timeout
-                    );
+        // Synchronous get via manager (ask manager, which forwards to origin node)
+        System.out.println("\n>>> get K=15,key='t1' via origin node 10 (sync)");
+        CompletionStage<Object> fut1 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L, "t1"), Duration.ofSeconds(3));
+        Object r1 = fut1.toCompletableFuture().get();
+        System.out.println("GET result: " + r1);
 
-                    Messages.GetResponse response =
-                            (Messages.GetResponse) Await.result(future, timeout.duration());
+        System.out.println("\n>>> get K=35,key='t2' via origin node 30 (sync)");
+        CompletionStage<Object> fut2 = PatternsCS.ask(manager, new Messages.ManagerGet(30L, 35L, "t2"), Duration.ofSeconds(3));
+        Object r2 = fut2.toCompletableFuture().get();
+        System.out.println("GET result: " + r2);
 
-                    System.out.println("[SYNC] Got from node2: " + response.key + "=" + response.value);
+        // Now add a node with key 25 (between 20 and 30). This should trigger rebalance:
+        System.out.println("\n>>> adding node 25 (rebalance should move some replicas)");
+        manager.tell(new Messages.AddNode(25L), ActorRef.noSender());
+        Thread.sleep(1000); // wait a moment for rebalance to complete
 
-                } catch (Exception e) {
-                    e.printStackTrace();
-                } finally {
-                    asynchronous = !asynchronous;
-                }
-            }
-        }
+        // Attempt get again after rebalance
+        System.out.println("\n>>> get K=15,key='t1' via origin node 10 (after adding 25)");
+        CompletionStage<Object> fut3 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L, "t1"), Duration.ofSeconds(3));
+        Object r3 = fut3.toCompletableFuture().get();
+        System.out.println("GET result after add: " + r3);
 
+        // Remove node 20
+        System.out.println("\n>>> removing node 20 (rebalance should replicate items hosted by 20 to others)");
+        manager.tell(new Messages.RemoveNode(20L), ActorRef.noSender());
+        Thread.sleep(1000);
+
+        System.out.println("\n>>> get K=15,key='t1' after removing node 20");
+        CompletionStage<Object> fut4 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L, "t1"), Duration.ofSeconds(3));
+        Object r4 = fut4.toCompletableFuture().get();
+        System.out.println("GET after remove: " + r4);
+
+        System.out.println("\nDemo finished -- shutting down.");
+        system.terminate();
     }
 }
