@@ -74,8 +74,7 @@ public class RingApp {
 
         System.out.println("\n##########");
         System.out.println("Client usage");
-        System.out.println("\n##########");
-        System.out.println("Client usage");
+        System.out.println("##########");
 
         // create a client that uses node 10 as coordinator
         ActorRef client = system.actorOf(ClientActor.props(manager, 10L), "client1");
@@ -86,6 +85,7 @@ public class RingApp {
         Thread.sleep(500);
         System.out.println("Request <get> of 'temperature' on node 15");
         client.tell(new Messages.ClientGet(15L, "temperature"), ActorRef.noSender());
+        Thread.sleep(1500);
 
         System.out.println("\nDemo finished -- shutting down.");
         system.terminate();
