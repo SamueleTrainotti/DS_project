@@ -150,4 +150,26 @@ public class Messages {
             this.key = key;
         }
     }
+
+    // Client-level API
+    public static class ClientUpdate implements Serializable {
+        public final long dataKey;
+        public final String key;
+        public final String value;
+        public ClientUpdate(long dataKey, String key, String value) {
+            this.dataKey = dataKey;
+            this.key = key;
+            this.value = value;
+        }
+    }
+
+    public static class ClientGet implements Serializable {
+        public final long dataKey;
+        public final String key;
+        public ClientGet(long dataKey, String key) {
+            this.dataKey = dataKey;
+            this.key = key;
+        }
+    }
+
 }
