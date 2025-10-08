@@ -35,15 +35,33 @@ public class ClientActor extends AbstractActor {
     private final long entryNodeKey; // which node to use as coordinator
     private final Timeout timeout = Timeout.create(Duration.ofSeconds(3));
 
+    /**
+     * Constructs a ClientActor.
+     *
+     * @param manager      The {@link ActorRef} of the {@link RingManager}.
+     * @param entryNodeKey The key of the node to be used as a coordinator for requests.
+     */
     public ClientActor(ActorRef manager, long entryNodeKey) {
         this.manager = manager;
         this.entryNodeKey = entryNodeKey;
     }
 
+    /**
+     * Creates a {@link Props} object for creating a {@link ClientActor}.
+     *
+     * @param manager      The {@link ActorRef} of the {@link RingManager}.
+     * @param entryNodeKey The key of the node to be used as a coordinator.
+     * @return A {@link Props} configuration object for the ClientActor.
+     */
     public static Props props(ActorRef manager, long entryNodeKey) {
         return Props.create(ClientActor.class, () -> new ClientActor(manager, entryNodeKey));
     }
 
+    /**
+     * Defines the message-handling behavior of the actor.
+     *
+     * @return A {@link Receive} object that maps message types to handler methods.
+     */
     @Override
     public Receive createReceive() {
         return receiveBuilder()
@@ -52,6 +70,13 @@ public class ClientActor extends AbstractActor {
                 .build();
     }
 
+    /**
+     * Handles a {@link Messages.ClientUpdate} request.
+     * <p>It wraps the request in a {@link Messages.ManagerPut} message and sends it to the
+     * {@link RingManager}. It then asynchronously handles the acknowledgement.
+     *
+     * @param req The client update request.
+     */
     private void onClientUpdate(Messages.ClientUpdate req) {
         Messages.ManagerPut put = new Messages.ManagerPut(
                 entryNodeKey, req.item);
@@ -69,6 +94,13 @@ public class ClientActor extends AbstractActor {
         });
     }
 
+    /**
+     * Handles a {@link Messages.ClientGet} request.
+     * <p>It wraps the request in a {@link Messages.ManagerGet} message and sends it to the
+     * {@link RingManager}. It then asynchronously handles the response, printing the retrieved value.
+     *
+     * @param req The client get request.
+     */
     private void onClientGet(Messages.ClientGet req) {
         Messages.ManagerGet get = new Messages.ManagerGet(entryNodeKey, req.key);
 

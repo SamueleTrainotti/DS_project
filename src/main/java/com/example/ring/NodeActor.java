@@ -57,16 +57,36 @@ public class NodeActor extends AbstractActor {
     //private final Map<Long, Map<String, String>> localStore = new HashMap<>();
     private LocalStore localStore = new LocalStore();
 
+    /**
+     * Constructs a NodeActor.
+     *
+     * @param id                A unique identifier for the node (for logging/debugging).
+     * @param nodeKey           The key that determines the node's position in the ring.
+     * @param replicationFactor The total number of replicas for each data item (N).
+     */
     private NodeActor(int id, long nodeKey, int replicationFactor) {
         this.id = id;
         this.nodeKey = nodeKey;
         this.replicationFactor = replicationFactor;
     }
 
+    /**
+     * Creates a {@link Props} object for creating a {@link NodeActor}.
+     *
+     * @param id                A unique identifier for the node.
+     * @param nodeKey           The key for the node in the ring.
+     * @param replicationFactor The replication factor for the system.
+     * @return A {@link Props} configuration object for the NodeActor.
+     */
     public static Props props(int id, long nodeKey, int replicationFactor) {
         return Props.create(NodeActor.class, () -> new NodeActor(id, nodeKey, replicationFactor));
     }
 
+    /**
+     * Defines the message-handling behavior of the actor.
+     *
+     * @return A {@link Receive} object that maps message types to handler methods.
+     */
     @Override
     public Receive createReceive() {
         return receiveBuilder()
@@ -78,6 +98,12 @@ public class NodeActor extends AbstractActor {
                 .build();
     }
 
+    /**
+     * Handles a membership update from the {@link RingManager}.
+     * <p>It sorts the new membership list and triggers a data rebalance.
+     *
+     * @param msg The {@link Messages.UpdateMembership} message containing the new list of nodes.
+     */
     private void onUpdateMembership(Messages.UpdateMembership msg) {
         // copy and sort membership by unsigned nodeKey
         List<Messages.NodeInfo> sorted = new ArrayList<>(msg.nodes);
@@ -88,6 +114,14 @@ public class NodeActor extends AbstractActor {
         rebalance();
     }
 
+    /**
+     * Handles a request to put data into the ring.
+     * <p>This node acts as the coordinator, finding the responsible nodes and sending them a
+     * {@link Messages.StoreReplica} message. It waits for a write quorum (W) of acknowledgements
+     * before confirming the success of the operation to the original sender.
+     *
+     * @param req The {@link Messages.DataPutRequest} containing the data item to store.
+     */
     private void onDataPutRequest(Messages.DataPutRequest req) {
         final ActorRef replyTo = getSender();  // save a ref to the sender, otherwise it will be Null in whenComplete callback
         List<Messages.NodeInfo> responsible = findResponsibleNodes(req.item.getKey(), req.replicationFactor);
@@ -123,11 +157,23 @@ public class NodeActor extends AbstractActor {
 
     }
 
+    /**
+     * Handles a request to store a replica of a data item.
+     * <p>This message is sent by a coordinator node to a replica node. This node simply
+     * stores the data item in its local store.
+     *
+     * @param msg The {@link Messages.StoreReplica} message containing the data item.
+     */
     private void onStoreReplica(Messages.StoreReplica msg) {
         localStore.store(msg.item);
         System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] StoreReplica stored: " + msg.item.getKey() + "=" + msg.item.getValue());
     }
 
+    /**
+     * Handles a request to retrieve a replica of a data item from the local store.
+     *
+     * @param msg The {@link Messages.GetReplica} message containing the key of the item.
+     */
     private void onGetReplica(Messages.GetReplica msg) {
         String value = null;
         DataItem item = localStore.get(msg.key);
@@ -135,6 +181,14 @@ public class NodeActor extends AbstractActor {
         getSender().tell(new Messages.GetReplicaResponse(item), getSelf());
     }
 
+    /**
+     * Handles a request to get data from the ring.
+     * <p>This node acts as the coordinator, finding the responsible nodes and sending them a
+     * {@link Messages.GetReplica} message. It waits for a read quorum (R) of responses and
+     * returns the first valid response to the original sender.
+     *
+     * @param req The {@link Messages.DataGetRequest} containing the key of the data to retrieve.
+     */
     private void onDataGetRequest(Messages.DataGetRequest req) {
         final ActorRef replyTo = getSender();  // save a ref to the sender, otherwise it will be Null in whenComplete callback
         List<Messages.NodeInfo> responsible = findResponsibleNodes(req.key, req.replicationFactor);
@@ -176,6 +230,16 @@ public class NodeActor extends AbstractActor {
     // Helpers
     // --------------------
 
+    /**
+     * A helper to wrap a {@link CompletableFuture} with a timeout.
+     *
+     * @param future  The future to wrap.
+     * @param timeout The timeout value.
+     * @param unit    The time unit for the timeout.
+     * @param <T>     The type of the future's result.
+     * @return A new {@link CompletableFuture} that will complete with the original future's result
+     * or be completed exceptionally with a {@link TimeoutException}.
+     */
     private <T> CompletableFuture<T> withTimeout(CompletableFuture<T> future, long timeout, TimeUnit unit) {
         CompletableFuture<T> timeoutFuture = new CompletableFuture<>();
         getContext().system().scheduler().scheduleOnce(
@@ -189,8 +253,13 @@ public class NodeActor extends AbstractActor {
 
 
     /**
-     * Find the set of responsible nodes (N nodes) for a given dataKey.
-     * Assumes membership is sorted ascending by unsigned nodeKey.
+     * Finds the set of N nodes responsible for a given data key using consistent hashing.
+     * <p>It finds the first node in the sorted membership list whose key is greater than or equal to the data key
+     * and then takes the next N-1 nodes in sequence (wrapping around if necessary).
+     *
+     * @param key         The data key for which to find responsible nodes.
+     * @param replication The number of responsible nodes to find (N).
+     * @return A list of {@link Messages.NodeInfo} objects for the responsible nodes.
      */
     private List<Messages.NodeInfo> findResponsibleNodes(Long key, int replication) {
         List<Messages.NodeInfo> res = new ArrayList<>();
@@ -216,9 +285,10 @@ public class NodeActor extends AbstractActor {
     }
 
     /**
-     * Minimal rebalance: for every dataKey we currently hold, compute the new responsible nodes.
-     * If this node is no longer responsible, forward all items in that bucket to the responsible nodes
-     * and remove the bucket locally.
+     * Rebalances the data stored on this node after a membership change.
+     * <p>For each data item in the local store, it recalculates the responsible nodes based on the new
+     * membership. If this node is no longer responsible for an item, it forwards the item to the new
+     * responsible nodes and removes it from its local store.
      */
     private void rebalance() {
         // copy keys to avoid concurrent modification

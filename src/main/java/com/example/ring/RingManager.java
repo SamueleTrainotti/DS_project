@@ -34,14 +34,31 @@ public class RingManager extends AbstractActor {
     private final int replicationFactor;
     private int nextId = 0;
 
+    /**
+     * Creates a {@link Props} object for creating a {@link RingManager} actor.
+     *
+     * @param replicationFactor The number of replicas to maintain for each data item.
+     * @return A {@link Props} configuration object for the RingManager.
+     */
     public static Props props(int replicationFactor) {
         return Props.create(RingManager.class, () -> new RingManager(replicationFactor));
     }
 
+    /**
+     * Constructs a RingManager.
+     *
+     * @param replicationFactor The replication factor to be used for data storage.
+     */
     public RingManager(int replicationFactor) {
         this.replicationFactor = replicationFactor;
     }
 
+    /**
+     * Defines the message-handling behavior of the actor.
+     * <p>This method maps message types to their corresponding handler methods.
+     *
+     * @return A {@link Receive} object that defines how to handle incoming messages.
+     */
     @Override
     public Receive createReceive() {
         return receiveBuilder()
@@ -52,6 +69,12 @@ public class RingManager extends AbstractActor {
                 .build();
     }
 
+    /**
+     * Handles the {@link Messages.AddNode} message.
+     * <p>Creates a new {@link NodeActor}, adds it to the ring, and broadcasts the updated membership.
+     *
+     * @param msg The message containing the key of the node to add.
+     */
     private void onAddNode(Messages.AddNode msg) {
         long nodeKey = msg.nodeKey;
         if (nodesByKey.containsKey(nodeKey)) {
@@ -64,6 +87,12 @@ public class RingManager extends AbstractActor {
         System.out.println("[manager] added node " + Long.toUnsignedString(nodeKey));
     }
 
+    /**
+     * Handles the {@link Messages.RemoveNode} message.
+     * <p>Removes the specified node from the ring, stops its actor, and broadcasts the updated membership.
+     *
+     * @param msg The message containing the key of the node to remove.
+     */
     private void onRemoveNode(Messages.RemoveNode msg) {
         long nodeKey = msg.nodeKey;
         ActorRef ref = nodesByKey.remove(nodeKey);
@@ -76,6 +105,12 @@ public class RingManager extends AbstractActor {
         }
     }
 
+    /**
+     * Handles the {@link Messages.ManagerPut} message.
+     * <p>Forwards a data put request to the specified origin node.
+     *
+     * @param msg The message containing the origin node key and the data item to store.
+     */
     private void onManagerPut(Messages.ManagerPut msg) {
         ActorRef origin = nodesByKey.get(msg.originNodeKey);
         if (origin == null) {
@@ -87,6 +122,12 @@ public class RingManager extends AbstractActor {
         getSender().tell(new Messages.PutAck(true), getSelf());
     }
 
+    /**
+     * Handles the {@link Messages.ManagerGet} message.
+     * <p>Forwards a data get request to the specified origin node and pipes the result back to the original sender.
+     *
+     * @param msg The message containing the origin node key and the key of the data to retrieve.
+     */
     private void onManagerGet(Messages.ManagerGet msg) {
         ActorRef origin = nodesByKey.get(msg.originNodeKey);
         if (origin == null) {
@@ -107,6 +148,10 @@ public class RingManager extends AbstractActor {
         });
     }
 
+    /**
+     * Broadcasts the current ring membership to all nodes.
+     * <p>This method is called whenever a node is added or removed, ensuring all nodes have a consistent view.
+     */
     private void broadcastMembership() {
         List<Messages.NodeInfo> infos = new ArrayList<>();
         for (Map.Entry<Long, ActorRef> e : nodesByKey.entrySet()) {

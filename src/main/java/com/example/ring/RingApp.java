@@ -20,6 +20,16 @@ import java.util.concurrent.CompletionStage;
  * The application uses the Akka actor model to manage concurrency and distribution.
  */
 public class RingApp {
+    /**
+     * The main entry point of the application.
+     * <p>This method sets up an Akka {@link ActorSystem}, creates a {@link RingManager},
+     * and then simulates a series of operations to demonstrate the ring's features.
+     * These operations include adding nodes, putting and getting data, and observing
+     * the system's behavior during rebalancing after nodes are added or removed.
+     *
+     * @param args Command line arguments (not used).
+     * @throws Exception if any of the operations fail, particularly the blocking `get()` calls on futures.
+     */
     public static void main(String[] args) throws Exception {
         ActorSystem system = ActorSystem.create("RingSystem");
 
