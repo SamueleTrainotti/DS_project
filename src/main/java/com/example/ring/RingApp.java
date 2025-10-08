@@ -27,25 +27,25 @@ public class RingApp {
         Thread.sleep(500);
 
         // Put a data item with numeric key 15 -> should be stored on nodes 20,30,40
-        System.out.println("\n>>> put K=15 (key='t1' value='v15') via origin node 10");
-        manager.tell(new Messages.ManagerPut(10L, 15L, "t1", "v15"), ActorRef.noSender());
+        System.out.println("\n>>> put K=15 value='v15' via origin node 10");
+        manager.tell(new Messages.ManagerPut(10L, new DataItem(0, 15L, "v15")), ActorRef.noSender());
         Thread.sleep(200);
 
         // Put a data item with numeric key 35 -> should be stored on nodes 40,10,20 (wrap-around)
-        System.out.println("\n>>> put K=35 (key='t2' value='v35') via origin node 30");
-        manager.tell(new Messages.ManagerPut(30L, 35L, "t2", "v35"), ActorRef.noSender());
+        System.out.println("\n>>> put K=35 value='v35' via origin node 30");
+        manager.tell(new Messages.ManagerPut(30L, new DataItem(0, 35L, "v35")), ActorRef.noSender());
         Thread.sleep(200);
 
         // Synchronous get via manager (ask manager, which forwards to origin node)
         System.out.println("\n>>> get K=15,key='t1' via origin node 10 (sync)");
         @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut1 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L, "t1"), Duration.ofSeconds(3));
+        CompletionStage<Object> fut1 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L), Duration.ofSeconds(3));
         Object r1 = fut1.toCompletableFuture().get();
         System.out.println("GET result: " + r1);
 
         System.out.println("\n>>> get K=35,key='t2' via origin node 30 (sync)");
         @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut2 = PatternsCS.ask(manager, new Messages.ManagerGet(30L, 35L, "t2"), Duration.ofSeconds(3));
+        CompletionStage<Object> fut2 = PatternsCS.ask(manager, new Messages.ManagerGet(30L, 35L), Duration.ofSeconds(3));
         Object r2 = fut2.toCompletableFuture().get();
         System.out.println("GET result: " + r2);
 
@@ -57,7 +57,7 @@ public class RingApp {
         // Attempt get again after rebalance
         System.out.println("\n>>> get K=15,key='t1' via origin node 10 (after adding 25)");
         @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut3 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L, "t1"), Duration.ofSeconds(3));
+        CompletionStage<Object> fut3 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L), Duration.ofSeconds(3));
         Object r3 = fut3.toCompletableFuture().get();
         System.out.println("GET result after add: " + r3);
 
@@ -68,7 +68,7 @@ public class RingApp {
 
         System.out.println("\n>>> get K=15,key='t1' after removing node 20");
         @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut4 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L, "t1"), Duration.ofSeconds(3));
+        CompletionStage<Object> fut4 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L), Duration.ofSeconds(3));
         Object r4 = fut4.toCompletableFuture().get();
         System.out.println("GET after remove: " + r4);
 
@@ -80,11 +80,11 @@ public class RingApp {
         ActorRef client = system.actorOf(ClientActor.props(manager, 10L), "client1");
 
         // demo sequence
-        System.out.println("Request <update> of 'temperature' on node 15");
-        client.tell(new Messages.ClientUpdate(15L, "temperature", "22C"), ActorRef.noSender());
+        System.out.println("Request <update> of '15' on node 15");
+        client.tell(new Messages.ClientUpdate(new DataItem(0, 15L, "22C")), ActorRef.noSender());
         Thread.sleep(500);
         System.out.println("Request <get> of 'temperature' on node 15");
-        client.tell(new Messages.ClientGet(15L, "temperature"), ActorRef.noSender());
+        client.tell(new Messages.ClientGet(15L), ActorRef.noSender());
         Thread.sleep(1500);
 
         System.out.println("\nDemo finished -- shutting down.");

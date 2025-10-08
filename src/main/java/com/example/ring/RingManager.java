@@ -68,22 +68,24 @@ public class RingManager extends AbstractActor {
             return;
         }
         // forward a DataPutRequest to the chosen node (origin)
-        origin.tell(new Messages.DataPutRequest(msg.dataKey, msg.key, msg.value, replicationFactor), getSelf());
+        origin.tell(new Messages.DataPutRequest(msg.item, replicationFactor), getSelf());
         getSender().tell(new Messages.PutAck(true), getSelf());
     }
 
     private void onManagerGet(Messages.ManagerGet msg) {
         ActorRef origin = nodesByKey.get(msg.originNodeKey);
         if (origin == null) {
-            getSender().tell(new Messages.DataGetResponse(msg.key, null), getSelf());
+            DataItem tmp = new DataItem(0, msg.key, null);
+            getSender().tell(new Messages.DataGetResponse(tmp), getSelf());
             return;
         }
         // ask the origin node to perform a DataGetRequest (which will consult responsible nodes)
-        CompletionStage<Object> future = PatternsCS.ask(origin, new Messages.DataGetRequest(msg.dataKey, msg.key, replicationFactor), Duration.ofSeconds(3));
+        CompletionStage<Object> future = PatternsCS.ask(origin, new Messages.DataGetRequest(msg.key, replicationFactor), Duration.ofSeconds(3));
         final ActorRef replyTo = getSender();
         future.whenComplete((resp, ex) -> {
             if (ex != null) {
-                replyTo.tell(new Messages.DataGetResponse(msg.key, null), getSelf());
+                DataItem tmp = new DataItem(0, msg.key, null);
+                replyTo.tell(new Messages.DataGetResponse(tmp), getSelf());
             } else {
                 replyTo.tell(resp, getSelf());
             }

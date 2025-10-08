@@ -4,11 +4,15 @@ import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 import akka.pattern.PatternsCS;
+import akka.util.Timeout;
 
 import java.time.Duration;
+
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * NodeActor: holds a nodeKey (unsigned), a local store, and a view of full membership.
@@ -23,11 +27,17 @@ public class NodeActor extends AbstractActor {
     private final long nodeKey; // unsigned key stored in a long
     private int replicationFactor;
 
+    private static final int N = 3; // replication factor
+    private static final int W = 2; // write quorum
+    private static final int R = 2; // read quorum
+    private static final Duration T = Duration.ofSeconds(3);
+
     // membership (sorted by nodeKey, ascending unsigned)
     private List<Messages.NodeInfo> membership = new ArrayList<>();
 
     // localStore: dataKey -> (itemKey -> value)
-    private final Map<Long, Map<String, String>> localStore = new HashMap<>();
+    //private final Map<Long, Map<String, String>> localStore = new HashMap<>();
+    private LocalStore localStore = new LocalStore();
 
     private NodeActor(int id, long nodeKey, int replicationFactor) {
         this.id = id;
@@ -61,82 +71,110 @@ public class NodeActor extends AbstractActor {
     }
 
     private void onDataPutRequest(Messages.DataPutRequest req) {
-        List<Messages.NodeInfo> responsible = findResponsibleNodes(req.dataKey, req.replicationFactor);
+        final ActorRef replyTo = getSender();  // save a ref to the sender, otherwise it will be Null in whenComplete callback
+        List<Messages.NodeInfo> responsible = findResponsibleNodes(req.item.getKey(), req.replicationFactor);
+
         // send store instructions to all responsible nodes
+        List<CompletionStage<Object>> futures = new ArrayList<>();
         for (Messages.NodeInfo ni : responsible) {
-            if (ni.ref.equals(getSelf())) {
-                // store locally
-                storeLocally(req.dataKey, req.key, req.value);
-                System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] locally stored (primary) " +
-                        Long.toUnsignedString(req.dataKey) + " : " + req.key + "=" + req.value);
-            } else {
-                ni.ref.tell(new Messages.StoreReplica(req.dataKey, req.key, req.value), getSelf());
-                System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] forwarded StoreReplica for key " +
-                        req.key + " to " + Long.toUnsignedString(ni.nodeKey));
-            }
+            CompletionStage<Object> f = PatternsCS.ask(
+                    ni.ref,
+                    new Messages.StoreReplica(req.item),
+                    Timeout.create(T)
+            );
+            futures.add(f);
         }
-        // ack to sender
-        getSender().tell(new Messages.PutAck(true), getSelf());
+
+        // wait for W ack replies
+        CompletableFuture<Void> quorumFuture =
+                CompletableFuture.allOf(
+                        futures.stream()
+                                .limit(W)
+                                .map(CompletionStage::toCompletableFuture)
+                                .toArray(CompletableFuture[]::new)
+                );
+
+        withTimeout(quorumFuture, T.getSeconds(), TimeUnit.SECONDS)
+                .whenComplete((v, ex) -> {
+                    if (ex != null) {
+                        replyTo.tell(new Messages.PutAck(false), getSelf());
+                    } else {
+                        replyTo.tell(new Messages.PutAck(true), getSelf());
+                    }
+                });
+
     }
 
     private void onStoreReplica(Messages.StoreReplica msg) {
-        storeLocally(msg.dataKey, msg.key, msg.value);
-        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] StoreReplica stored: " +
-                Long.toUnsignedString(msg.dataKey) + " : " + msg.key + "=" + msg.value);
+        localStore.store(msg.item);
+        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] StoreReplica stored: " + msg.item.getKey() + "=" + msg.item.getValue());
     }
 
     private void onGetReplica(Messages.GetReplica msg) {
         String value = null;
-        Map<String, String> bucket = localStore.get(msg.dataKey);
-        if (bucket != null) value = bucket.get(msg.key);
-        getSender().tell(new Messages.GetReplicaResponse(msg.key, value), getSelf());
+        DataItem item = localStore.get(msg.key);
+
+        getSender().tell(new Messages.GetReplicaResponse(item), getSelf());
     }
 
     private void onDataGetRequest(Messages.DataGetRequest req) {
-        List<Messages.NodeInfo> responsible = findResponsibleNodes(req.dataKey, req.replicationFactor);
+        final ActorRef replyTo = getSender();  // save a ref to the sender, otherwise it will be Null in whenComplete callback
+        List<Messages.NodeInfo> responsible = findResponsibleNodes(req.key, req.replicationFactor);
 
-        // try each responsible node in order until a non-null value is returned
+        List<CompletionStage<Object>> futures = new ArrayList<>();
         for (Messages.NodeInfo ni : responsible) {
-            if (ni.ref.equals(getSelf())) {
-                Map<String, String> bucket = localStore.get(req.dataKey);
-                if (bucket != null && bucket.containsKey(req.key)) {
-                    getSender().tell(new Messages.DataGetResponse(req.key, bucket.get(req.key)), getSelf());
-                    return;
-                }
-            } else {
-                try {
-                    CompletionStage<Object> future = PatternsCS.ask(ni.ref, new Messages.GetReplica(req.dataKey, req.key), Duration.ofSeconds(2));
-                    Object reply = future.toCompletableFuture().get(2, TimeUnit.SECONDS);
-                    if (reply instanceof Messages.GetReplicaResponse) {
-                        Messages.GetReplicaResponse r = (Messages.GetReplicaResponse) reply;
-                        if (r.value != null) {
-                            getSender().tell(new Messages.DataGetResponse(r.key, r.value), getSelf());
-                            return;
-                        }
-                    }
-                } catch (Exception ex) {
-                    // timeouts or other errors — try next node
-                }
-            }
+            CompletionStage<Object> f = PatternsCS.ask(
+                    ni.ref,
+                    new Messages.GetReplica(req.key),
+                    Timeout.create(T)
+            );
+            futures.add(f);
         }
-        // not found among responsible replicas
-        getSender().tell(new Messages.DataGetResponse(req.key, null), getSelf());
+
+        // quando arrivano almeno R risposte, ritorna la prima valida
+        CompletableFuture<Object> quorumRead =
+                (CompletableFuture<Object>) CompletableFuture.anyOf(
+                        futures.stream()
+                                .limit(R)
+                                .map(CompletionStage::toCompletableFuture)
+                                .toArray(CompletableFuture[]::new)
+                );
+
+        withTimeout(quorumRead, T.getSeconds(), TimeUnit.SECONDS)
+                .whenComplete((resp, ex) -> {
+                    if (ex != null) {
+                        DataItem tmp = new DataItem(0, req.key, null);
+                        replyTo.tell(new Messages.DataGetResponse(tmp), getSelf());
+                    } else if (resp instanceof Messages.GetReplicaResponse) {
+                        Messages.GetReplicaResponse r = (Messages.GetReplicaResponse) resp;
+                        replyTo.tell(new Messages.DataGetResponse(r.item), getSelf());
+                    }
+                });
+
     }
+
 
     // --------------------
     // Helpers
     // --------------------
 
-    private void storeLocally(long dataKey, String key, String value) {
-        Map<String, String> bucket = localStore.computeIfAbsent(dataKey, k -> new HashMap<>());
-        bucket.put(key, value);
+    private <T> CompletableFuture<T> withTimeout(CompletableFuture<T> future, long timeout, TimeUnit unit) {
+        CompletableFuture<T> timeoutFuture = new CompletableFuture<>();
+        getContext().system().scheduler().scheduleOnce(
+                scala.concurrent.duration.Duration.create(timeout, unit),
+                () -> timeoutFuture.completeExceptionally(new TimeoutException("Operation timed out")),
+                getContext().dispatcher()
+        );
+        return CompletableFuture.anyOf(future, timeoutFuture)
+                .thenApply(o -> (T) o);
     }
+
 
     /**
      * Find the set of responsible nodes (N nodes) for a given dataKey.
      * Assumes membership is sorted ascending by unsigned nodeKey.
      */
-    private List<Messages.NodeInfo> findResponsibleNodes(long dataKey, int replication) {
+    private List<Messages.NodeInfo> findResponsibleNodes(Long key, int replication) {
         List<Messages.NodeInfo> res = new ArrayList<>();
         if (membership.isEmpty()) return res;
 
@@ -145,7 +183,7 @@ public class NodeActor extends AbstractActor {
         // find first index with nodeKey >= dataKey (unsigned compare)
         int idx = -1;
         for (int i = 0; i < n; i++) {
-            if (Long.compareUnsigned(membership.get(i).nodeKey, dataKey) >= 0) {
+            if (Long.compareUnsigned(membership.get(i).nodeKey, key) >= 0) {
                 idx = i;
                 break;
             }
@@ -166,7 +204,7 @@ public class NodeActor extends AbstractActor {
      */
     private void rebalance() {
         // copy keys to avoid concurrent modification
-        Set<Long> keys = new HashSet<>(localStore.keySet());
+        Set<Long> keys = new HashSet<>(localStore.getKeys());
         for (Long dataKey : keys) {
             List<Messages.NodeInfo> responsible = findResponsibleNodes(dataKey, this.replicationFactor);
             boolean iShouldHold = false;
@@ -177,22 +215,21 @@ public class NodeActor extends AbstractActor {
                 }
             }
             if (!iShouldHold) {
-                // forward entire bucket to responsible nodes
-                Map<String, String> bucket = localStore.get(dataKey);
-                if (bucket != null) {
-                    for (Map.Entry<String, String> e : bucket.entrySet()) {
-                        for (Messages.NodeInfo ni : responsible) {
-                            // skip sending back to a node that is ourselves (we already determined it's not responsible)
-                            if (!ni.ref.equals(getSelf())) {
-                                ni.ref.tell(new Messages.StoreReplica(dataKey, e.getKey(), e.getValue()), getSelf());
-                            }
+                // forward item to responsible nodes
+                DataItem item = localStore.get(dataKey);
+                if (item != null) {
+                    for (Messages.NodeInfo ni : responsible) {
+                        // skip sending back to a node that is ourselves (we already determined it's not responsible)
+                        if (!ni.ref.equals(getSelf())) {
+                            ni.ref.tell(new Messages.StoreReplica(item), getSelf());
                         }
                     }
                 }
                 // remove local copy
                 localStore.remove(dataKey);
-                System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] rebalance: removed bucket " + Long.toUnsignedString(dataKey));
+                System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] rebalance: removed item " + Long.toUnsignedString(dataKey));
             }
         }
     }
 }
+

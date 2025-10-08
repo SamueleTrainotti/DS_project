@@ -34,27 +34,21 @@ public class Messages {
     // -------------------
     // Put request (issued by a client/node to any node)
     public static class DataPutRequest implements Serializable {
-        public final long dataKey; // numeric key used for partitioning (unsigned)
-        public final String key;   // logical key (string)
-        public final String value; // value to store
+        public final DataItem item;
         public final int replicationFactor;
 
-        public DataPutRequest(long dataKey, String key, String value, int replicationFactor) {
-            this.dataKey = dataKey;
-            this.key = key;
-            this.value = value;
+        public DataPutRequest(DataItem item, int replicationFactor) {
+            this.item = item;
             this.replicationFactor = replicationFactor;
         }
     }
 
     // Get request (client asks a node to find the key among responsible nodes)
     public static class DataGetRequest implements Serializable {
-        public final long dataKey;
-        public final String key;
+        public final Long key;
         public final int replicationFactor;
 
-        public DataGetRequest(long dataKey, String key, int replicationFactor) {
-            this.dataKey = dataKey;
+        public DataGetRequest(Long key, int replicationFactor) {
             this.key = key;
             this.replicationFactor = replicationFactor;
         }
@@ -62,12 +56,10 @@ public class Messages {
 
     // Response to DataGetRequest
     public static class DataGetResponse implements Serializable {
-        public final String key;
-        public final String value; // null when not found
+        public final DataItem item;
 
-        public DataGetResponse(String key, String value) {
-            this.key = key;
-            this.value = value;
+        public DataGetResponse(DataItem item) {
+            this.item = item;
         }
     }
 
@@ -76,36 +68,28 @@ public class Messages {
     // ---------------------------
     // Instruct a node to store a replica of a specific dataKey/key/value
     public static class StoreReplica implements Serializable {
-        public final long dataKey;
-        public final String key;
-        public final String value;
+        public final DataItem item;
 
-        public StoreReplica(long dataKey, String key, String value) {
-            this.dataKey = dataKey;
-            this.key = key;
-            this.value = value;
+        public StoreReplica(DataItem item) {
+            this.item = item;
         }
     }
 
     // Request to read a replica for a specific dataKey/key (used when searching responsible nodes)
     public static class GetReplica implements Serializable {
-        public final long dataKey;
-        public final String key;
+        public final Long key;
 
-        public GetReplica(long dataKey, String key) {
-            this.dataKey = dataKey;
+        public GetReplica(Long key) {
             this.key = key;
         }
     }
 
     // Reply for GetReplica
     public static class GetReplicaResponse implements Serializable {
-        public final String key;
-        public final String value; // null if not present
+        public final DataItem item;
 
-        public GetReplicaResponse(String key, String value) {
-            this.key = key;
-            this.value = value;
+        public GetReplicaResponse(DataItem item) {
+            this.item  = item;
         }
     }
 
@@ -129,46 +113,53 @@ public class Messages {
     // Manager forwarding APIs (client uses manager to target a node)
     public static class ManagerPut implements Serializable {
         public final long originNodeKey;
-        public final long dataKey;
-        public final String key;
-        public final String value;
-        public ManagerPut(long originNodeKey, long dataKey, String key, String value) {
+        public final DataItem item;
+
+        public ManagerPut(long originNodeKey, DataItem item) {
             this.originNodeKey = originNodeKey;
-            this.dataKey = dataKey;
-            this.key = key;
-            this.value = value;
+            this.item = item;
         }
     }
 
     public static class ManagerGet implements Serializable {
         public final long originNodeKey;
-        public final long dataKey;
-        public final String key;
-        public ManagerGet(long originNodeKey, long dataKey, String key) {
+        public final Long key;
+
+        public ManagerGet(long originNodeKey, Long key) {
             this.originNodeKey = originNodeKey;
-            this.dataKey = dataKey;
             this.key = key;
         }
     }
 
     // Client-level API
     public static class ClientUpdate implements Serializable {
-        public final long dataKey;
-        public final String key;
-        public final String value;
-        public ClientUpdate(long dataKey, String key, String value) {
-            this.dataKey = dataKey;
-            this.key = key;
-            this.value = value;
+        public final DataItem item;
+
+        public ClientUpdate(DataItem item) {
+            this.item = item;
         }
     }
 
     public static class ClientGet implements Serializable {
-        public final long dataKey;
-        public final String key;
-        public ClientGet(long dataKey, String key) {
-            this.dataKey = dataKey;
+        public final Long key;
+
+        public ClientGet(Long key) {
             this.key = key;
+        }
+    }
+
+    // conferma singola replica
+    public static class WriteAck implements Serializable {
+        public final boolean ok;
+        public WriteAck(boolean ok) { this.ok = ok; }
+    }
+
+    // risposta di lettura da una replica
+    public static class ReadResponse implements Serializable {
+        public final DataItem item;
+
+        public ReadResponse(DataItem item) {
+            this.item = item;
         }
     }
 

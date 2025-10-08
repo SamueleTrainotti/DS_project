@@ -34,7 +34,7 @@ public class ClientActor extends AbstractActor {
 
     private void onClientUpdate(Messages.ClientUpdate req) {
         Messages.ManagerPut put = new Messages.ManagerPut(
-                entryNodeKey, req.dataKey, req.key, req.value);
+                entryNodeKey, req.item);
 
         @SuppressWarnings("deprecation")
         CompletionStage<Object> fut =
@@ -44,13 +44,13 @@ public class ClientActor extends AbstractActor {
             if (ex != null) {
                 System.out.println("[client] Update failed: " + ex.getMessage());
             } else {
-                System.out.println("[client] Update OK for key=" + req.key);
+                System.out.println("[client] Update OK for key=" + req.item.getKey());
             }
         });
     }
 
     private void onClientGet(Messages.ClientGet req) {
-        Messages.ManagerGet get = new Messages.ManagerGet(entryNodeKey, req.dataKey, req.key);
+        Messages.ManagerGet get = new Messages.ManagerGet(entryNodeKey, req.key);
 
         @SuppressWarnings("deprecation")
         CompletionStage<Object> fut =
@@ -61,7 +61,7 @@ public class ClientActor extends AbstractActor {
                 System.out.println("[client] Get failed: " + ex.getMessage());
             } else if (reply instanceof Messages.DataGetResponse) {
                 Messages.DataGetResponse r = (Messages.DataGetResponse) reply;
-                System.out.println("[client] Get result: " + r.key + "=" + r.value);
+                System.out.println("[client] Get result: " + r.item.getKey() + "=" + r.item.getValue());
             }
         });
     }
