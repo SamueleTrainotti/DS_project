@@ -7,6 +7,18 @@ import akka.pattern.PatternsCS;
 import java.time.Duration;
 import java.util.concurrent.CompletionStage;
 
+/**
+ * A demo application that showcases the functionality of a distributed ring data store.
+ * This application demonstrates:
+ * <ul>
+ *     <li>Creation of a ring with a specified replication factor.</li>
+ *     <li>Dynamically adding and removing nodes from the ring.</li>
+ *     <li>Putting and getting data from the ring.</li>
+ *     <li>Automatic data rebalancing when nodes are added or removed.</li>
+ *     <li>Client interaction with the ring for data updates and retrieval.</li>
+ * </ul>
+ * The application uses the Akka actor model to manage concurrency and distribution.
+ */
 public class RingApp {
     public static void main(String[] args) throws Exception {
         ActorSystem system = ActorSystem.create("RingSystem");

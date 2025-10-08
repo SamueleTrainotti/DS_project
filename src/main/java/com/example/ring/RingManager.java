@@ -10,8 +10,23 @@ import java.util.*;
 import java.util.concurrent.CompletionStage;
 
 /**
- * Manager to create nodes, maintain mapping nodeKey -> ActorRef and broadcast membership updates.
- * Also exposes ManagerPut / ManagerGet APIs to allow the demo main() to target a specific origin node.
+ * Manages the lifecycle of nodes in the distributed ring and facilitates communication.
+ *
+ * <p>The RingManager is a central actor responsible for:
+ * <ul>
+ *     <li><b>Node Management:</b> Creating new nodes ({@link NodeActor}) and adding them to the ring,
+ *     as well as removing them.</li>
+ *     <li><b>Membership Broadcasting:</b> Maintaining a map of node keys to their {@link ActorRef}s and
+ *     broadcasting updated membership lists to all nodes in the ring whenever a node is added or removed.
+ *     This ensures that all nodes have a consistent view of the ring's topology.</li>
+ *     <li><b>Request Forwarding:</b> Exposing {@link Messages.ManagerPut} and {@link Messages.ManagerGet} APIs.
+ *     These are primarily for demonstration and testing purposes, allowing external clients (like the main application)
+ *     to initiate PUT and GET operations by specifying an "origin" node. The manager forwards these requests
+ *     to the designated origin node, which then handles the request according to the ring's protocol.</li>
+ * </ul>
+ *
+ * <p>This actor plays a crucial role in the dynamic nature of the ring, enabling nodes to join and leave
+ * without disrupting the overall service.
  */
 public class RingManager extends AbstractActor {
 

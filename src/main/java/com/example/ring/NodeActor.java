@@ -15,11 +15,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * NodeActor: holds a nodeKey (unsigned), a local store, and a view of full membership.
- * Minimal rebalance: when membership changes, items this node should not hold are forwarded
- * to new responsible nodes and removed locally.
+ * Represents a single node in the distributed data store ring.
  *
- * NOTE (demo): this actor may perform blocking waits (for simplification). Not production style.
+ * <p>Each {@code NodeActor} is responsible for a segment of the hash ring, identified by its {@code nodeKey}.
+ * Its primary duties include:
+ * <ul>
+ *     <li><b>Data Storage:</b> Maintaining a local key-value store ({@link LocalStore}) for data items for which it is a replica.
+ *     This includes storing new replicas ({@link #onStoreReplica(Messages.StoreReplica)}) and retrieving them
+ *     ({@link #onGetReplica(Messages.GetReplica)}).</li>
+ *     <li><b>Request Coordination:</b> Handling client requests for data operations. For a PUT operation
+ *     ({@link #onDataPutRequest(Messages.DataPutRequest)}), it identifies the N responsible nodes and sends them the data to store,
+ *     waiting for a write quorum (W) of acknowledgements. For a GET operation ({@link #onDataGetRequest(Messages.DataGetRequest)}),
+ *     it requests the data from the N responsible nodes and waits for a read quorum (R) of responses.</li>
+ *     <li><b>Membership Management:</b> Receiving and processing membership updates from the {@link RingManager}
+ *     ({@link #onUpdateMembership(Messages.UpdateMembership)}). The membership list is kept sorted by node keys to enable
+ *     consistent hashing.</li>
+ *     <li><b>Data Rebalancing:</b> When the ring membership changes, the node re-evaluates its locally stored data.
+ *     If it is no longer a responsible replica for a data item, it forwards that item to the new correct nodes
+ *     and removes it from its local store ({@link #rebalance()}). This ensures data is correctly redistributed
+ *     as nodes join and leave the ring.</li>
+ * </ul>
+ * <p>The actor uses a quorum-based system (N, W, R) to ensure data consistency and availability across the distributed
+ * system. All network operations are performed asynchronously with timeouts to prevent the system from blocking.
+ * Note that this implementation is for demonstration purposes and may not cover all edge cases of a production system.
  */
 public class NodeActor extends AbstractActor {
 
@@ -232,4 +250,3 @@ public class NodeActor extends AbstractActor {
         }
     }
 }
-

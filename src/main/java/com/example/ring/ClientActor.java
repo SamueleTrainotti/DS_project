@@ -9,6 +9,26 @@ import akka.util.Timeout;
 import java.time.Duration;
 import java.util.concurrent.CompletionStage;
 
+/**
+ * An actor that simulates a client interacting with the distributed ring data store.
+ *
+ * <p>The {@code ClientActor} provides a simplified interface for performing PUT and GET operations
+ * on the ring. It is initialized with a reference to the {@link RingManager} and the key of an
+ * "entry" node, which will be used as the coordinator for all its requests.
+ *
+ * <p>Its responsibilities include:
+ * <ul>
+ *     <li>Receiving client-level requests, such as {@link Messages.ClientUpdate} and {@link Messages.ClientGet}.</li>
+ *     <li>Translating these requests into the manager-level protocol ({@link Messages.ManagerPut} and
+ *     {@link Messages.ManagerGet}).</li>
+ *     <li>Sending the translated requests to the {@link RingManager}, specifying the coordinator node.</li>
+ *     <li>Asynchronously handling the responses and printing the outcome (success, failure, or retrieved data)
+ *     to the console.</li>
+ * </ul>
+ *
+ * <p>This actor demonstrates how a client application would interact with the ring, abstracting away the
+ * details of which node is ultimately responsible for the data.
+ */
 public class ClientActor extends AbstractActor {
 
     private final ActorRef manager; // entrypoint to the system
