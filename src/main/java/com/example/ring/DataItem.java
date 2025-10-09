@@ -78,4 +78,9 @@ public class DataItem {
     public void setValue(String value) {
         this.value = value;
     }
+
+    @Override
+    public String toString() {
+        return  "DataItem{" + "version=" + version + ", key=" + key + ", value=" + value + '}';
+    }
 }
