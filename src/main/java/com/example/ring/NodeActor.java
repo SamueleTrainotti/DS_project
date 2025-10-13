@@ -73,35 +73,22 @@ public class NodeActor extends AbstractActor {
 
     /**
      * Handles a request to get data from the ring, ensuring sequential consistency.
-     * <p>This node acts as the coordinator. It requests the data item from all N responsible nodes
-     * and waits for R responses. It then finds the item with the highest version among the
-     * responses and returns it to the original sender.
-     *
-     * @param req The {@link Messages.DataGetRequest} containing the key of the data to retrieve.
+     * This node acts as the coordinator.
      */
     private void onDataGetRequest(Messages.DataGetRequest req) {
         final ActorRef replyTo = getSender();
-        List<Messages.NodeInfo> responsible = findResponsibleNodes(req.key, req.replicationFactor);
+        final Long key = req.key;
+        final List<Messages.NodeInfo> responsible = findResponsibleNodes(key, req.replicationFactor);
 
-        List<CompletionStage<Object>> futures = responsible.stream()
-                .map(nodeInfo -> PatternsCS.ask(nodeInfo.ref, new Messages.GetReplica(req.key), T))
-                .collect(Collectors.toList());
-
-        CompletionStage<List<Messages.GetReplicaResponse>> quorumFuture = collectQuorum(futures, R, Messages.GetReplicaResponse.class);
+        CompletionStage<List<Messages.GetReplicaResponse>> quorumFuture = readReplicasFromQuorum(key, responsible, R);
 
         withTimeout(quorumFuture.toCompletableFuture(), T.getSeconds(), TimeUnit.SECONDS)
                 .whenComplete((responses, ex) -> {
                     if (ex != null) {
                         // On timeout or failure to achieve quorum, reply with a not-found item.
-                        replyTo.tell(new Messages.DataGetResponse(new DataItem(0, req.key, null)), getSelf());
+                        replyTo.tell(new Messages.DataGetResponse(new DataItem(0, key, null)), getSelf());
                     } else {
-                        // Find the response with the highest version number.
-                        DataItem latestItem = responses.stream()
-                                .map(response -> response.item)
-                                .filter(Objects::nonNull)
-                                .max(Comparator.comparing(DataItem::getVersion))
-                                .orElse(new DataItem(0, req.key, null)); // Or not-found if all were null
-
+                        DataItem latestItem = getLatestItem(responses, key);
                         replyTo.tell(new Messages.DataGetResponse(latestItem), getSelf());
                     }
                 });
@@ -109,46 +96,16 @@ public class NodeActor extends AbstractActor {
 
     /**
      * Handles a request to put data into the ring, ensuring sequential consistency.
-     * <p>This implements a two-phase write process:
-     * <p>1. **Read Phase:** It requests the current version of the data item from all N responsible nodes
-     *    and waits for W responses to determine the highest current version.
-     * <p>2. **Write Phase:** It increments the version number, sends a {@link Messages.StoreReplica} request
-     *    to all N nodes, and waits for W acknowledgements before confirming success to the client.
-     *
-     * @param req The {@link Messages.DataPutRequest} containing the data item to store.
+     * This implements a two-phase write process.
      */
     private void onDataPutRequest(Messages.DataPutRequest req) {
         final ActorRef replyTo = getSender();
-        final Long key = req.item.getKey();
-        List<Messages.NodeInfo> responsible = findResponsibleNodes(key, req.replicationFactor);
+        final List<Messages.NodeInfo> responsible = findResponsibleNodes(req.item.getKey(), req.replicationFactor);
 
-        // Phase 1: Read versions from W nodes
-        List<CompletionStage<Object>> readFutures = responsible.stream()
-                .map(nodeInfo -> PatternsCS.ask(nodeInfo.ref, new Messages.GetReplica(key), T))
-                .collect(Collectors.toList());
+        CompletionStage<List<Messages.PutAck>> finalFuture = getNewDataItem(req, responsible)
+                .thenCompose(newItem -> writeItemToQuorum(newItem, responsible));
 
-        CompletionStage<List<Messages.GetReplicaResponse>> readQuorumFuture = collectQuorum(readFutures, W, Messages.GetReplicaResponse.class);
-
-        CompletionStage<List<Messages.PutAck>> finalFuture = readQuorumFuture.thenCompose(responses -> {
-            // Determine the highest version from the read quorum
-            int maxVersion = responses.stream()
-                    .map(response -> response.item)
-                    .filter(Objects::nonNull)
-                    .mapToInt(DataItem::getVersion)
-                    .max()
-                    .orElse(0);
-
-            DataItem newItem = new DataItem(maxVersion + 1, key, req.item.getValue());
-
-            // Phase 2: Write the new version to N nodes and wait for W acks
-            List<CompletionStage<Object>> writeFutures = responsible.stream()
-                    .map(nodeInfo -> PatternsCS.ask(nodeInfo.ref, new Messages.StoreReplica(newItem), T))
-                    .collect(Collectors.toList());
-
-            return collectQuorum(writeFutures, W, Messages.PutAck.class);
-        });
-
-        withTimeout(finalFuture.toCompletableFuture(), T.getSeconds() * 2, TimeUnit.SECONDS) // Give more time for 2 phases
+        withTimeout(finalFuture.toCompletableFuture(), T.getSeconds() * 2, TimeUnit.SECONDS)
                 .whenComplete((v, ex) -> {
                     if (ex != null) {
                         replyTo.tell(new Messages.PutAck(false), getSelf());
@@ -176,23 +133,69 @@ public class NodeActor extends AbstractActor {
     }
 
     // --------------------
-    // Helpers
+    // Asynchronous Operation Helpers
+    // --------------------
+
+    /**
+     * Phase 1 of GET: Reads replicas from a quorum of R nodes.
+     */
+    private CompletionStage<List<Messages.GetReplicaResponse>> readReplicasFromQuorum(Long key, List<Messages.NodeInfo> responsible, int quorumSize) {
+        List<CompletionStage<Object>> futures = responsible.stream()
+                .map(nodeInfo -> PatternsCS.ask(nodeInfo.ref, new Messages.GetReplica(key), T))
+                .collect(Collectors.toList());
+        return collectQuorum(futures, quorumSize, Messages.GetReplicaResponse.class);
+    }
+
+    /**
+     * Processes responses from a GET operation to find the item with the highest version.
+     */
+    private DataItem getLatestItem(List<Messages.GetReplicaResponse> responses, Long key) {
+        return responses.stream()
+                .map(response -> response.item)
+                .filter(Objects::nonNull)
+                .max(Comparator.comparing(DataItem::getVersion))
+                .orElse(new DataItem(0, key, null)); // Or not-found if all were null
+    }
+
+    /**
+     * Phase 1 of PUT: Reads versions from a quorum of W nodes to determine the next version.
+     */
+    private CompletionStage<DataItem> getNewDataItem(Messages.DataPutRequest req, List<Messages.NodeInfo> responsible) {
+        Long key = req.item.getKey();
+        CompletionStage<List<Messages.GetReplicaResponse>> readQuorumFuture = readReplicasFromQuorum(key, responsible, W);
+
+        return readQuorumFuture.thenApply(responses -> {
+            int maxVersion = responses.stream()
+                    .map(response -> response.item)
+                    .filter(Objects::nonNull)
+                    .mapToInt(DataItem::getVersion)
+                    .max()
+                    .orElse(0);
+            return new DataItem(maxVersion + 1, key, req.item.getValue());
+        });
+    }
+
+    /**
+     * Phase 2 of PUT: Writes the new data item to a quorum of W nodes.
+     */
+    private CompletionStage<List<Messages.PutAck>> writeItemToQuorum(DataItem newItem, List<Messages.NodeInfo> responsible) {
+        List<CompletionStage<Object>> writeFutures = responsible.stream()
+                .map(nodeInfo -> PatternsCS.ask(nodeInfo.ref, new Messages.StoreReplica(newItem), T))
+                .collect(Collectors.toList());
+        return collectQuorum(writeFutures, W, Messages.PutAck.class);
+    }
+
+
+    // --------------------
+    // General Helpers
     // --------------------
 
     /**
      * A helper that transforms a list of futures into a single future that completes when a quorum is reached.
-     *
-     * @param futures       The list of {@link CompletionStage}s to wait for.
-     * @param quorum        The number of successful results required.
-     * @param expectedClass The class of the expected successful result.
-     * @param <T>           The type of the expected result.
-     * @return A {@link CompletionStage} that completes with a list of results when the quorum is met,
-     * or completes exceptionally if the quorum cannot be reached.
      */
     private <T> CompletionStage<List<T>> collectQuorum(List<CompletionStage<Object>> futures, int quorum, Class<T> expectedClass) {
         CompletableFuture<List<T>> promise = new CompletableFuture<>();
         List<T> results = Collections.synchronizedList(new ArrayList<>());
-        AtomicInteger successes = new AtomicInteger(0);
         AtomicInteger failures = new AtomicInteger(0);
         int totalFutures = futures.size();
 
@@ -211,7 +214,7 @@ public class NodeActor extends AbstractActor {
 
                 if (exception == null && expectedClass.isInstance(response)) {
                     results.add(expectedClass.cast(response));
-                    if (successes.incrementAndGet() >= quorum) {
+                    if (results.size() >= quorum) {
                         promise.complete(results);
                     }
                 } else {
@@ -226,13 +229,6 @@ public class NodeActor extends AbstractActor {
 
     /**
      * A helper to wrap a {@link CompletableFuture} with a timeout using the Akka scheduler.
-     *
-     * @param future  The future to wrap.
-     * @param timeout The timeout value.
-     * @param unit    The time unit for the timeout.
-     * @param <T>     The type of the future's result.
-     * @return A new {@link CompletableFuture} that will complete with the original future's result
-     * or be completed exceptionally with a {@link TimeoutException}.
      */
     private <T> CompletableFuture<T> withTimeout(CompletableFuture<T> future, long timeout, TimeUnit unit) {
         CompletableFuture<T> timeoutFuture = new CompletableFuture<>();
