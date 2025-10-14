@@ -35,6 +35,7 @@ public class NodeActor extends AbstractActor {
     private final long nodeKey;
     private final int replicationFactor;
 
+    // FIXME: These values are hardcoded. For more flexibility, they could be passed via configuration.
     private static final int W = 2; // write quorum
     private static final int R = 2; // read quorum
     private static final Duration T = Duration.ofSeconds(3);
@@ -80,16 +81,16 @@ public class NodeActor extends AbstractActor {
         final Long key = req.key;
         final List<Messages.NodeInfo> responsible = findResponsibleNodes(key, req.replicationFactor);
 
-        CompletionStage<List<Messages.GetReplicaResponse>> quorumFuture = readReplicasFromQuorum(key, responsible, R);
+        CompletionStage<List<Messages.DataItemResponse>> quorumFuture = readReplicasFromQuorum(key, responsible, R);
 
         withTimeout(quorumFuture.toCompletableFuture(), T.getSeconds(), TimeUnit.SECONDS)
                 .whenComplete((responses, ex) -> {
                     if (ex != null) {
                         // On timeout or failure to achieve quorum, reply with a not-found item.
-                        replyTo.tell(new Messages.DataGetResponse(new DataItem(0, key, null)), getSelf());
+                        replyTo.tell(new Messages.DataItemResponse(new DataItem(0, key, null)), getSelf());
                     } else {
                         DataItem latestItem = getLatestItem(responses, key);
-                        replyTo.tell(new Messages.DataGetResponse(latestItem), getSelf());
+                        replyTo.tell(new Messages.DataItemResponse(latestItem), getSelf());
                     }
                 });
     }
@@ -129,7 +130,7 @@ public class NodeActor extends AbstractActor {
      */
     private void onGetReplica(Messages.GetReplica msg) {
         DataItem item = localStore.get(msg.key);
-        getSender().tell(new Messages.GetReplicaResponse(item), getSelf());
+        getSender().tell(new Messages.DataItemResponse(item), getSelf());
     }
 
     // --------------------
@@ -139,17 +140,17 @@ public class NodeActor extends AbstractActor {
     /**
      * Phase 1 of GET: Reads replicas from a quorum of R nodes.
      */
-    private CompletionStage<List<Messages.GetReplicaResponse>> readReplicasFromQuorum(Long key, List<Messages.NodeInfo> responsible, int quorumSize) {
+    private CompletionStage<List<Messages.DataItemResponse>> readReplicasFromQuorum(Long key, List<Messages.NodeInfo> responsible, int quorumSize) {
         List<CompletionStage<Object>> futures = responsible.stream()
                 .map(nodeInfo -> PatternsCS.ask(nodeInfo.ref, new Messages.GetReplica(key), T))
                 .collect(Collectors.toList());
-        return collectQuorum(futures, quorumSize, Messages.GetReplicaResponse.class);
+        return collectQuorum(futures, quorumSize, Messages.DataItemResponse.class);
     }
 
     /**
      * Processes responses from a GET operation to find the item with the highest version.
      */
-    private DataItem getLatestItem(List<Messages.GetReplicaResponse> responses, Long key) {
+    private DataItem getLatestItem(List<Messages.DataItemResponse> responses, Long key) {
         return responses.stream()
                 .map(response -> response.item)
                 .filter(Objects::nonNull)
@@ -162,7 +163,7 @@ public class NodeActor extends AbstractActor {
      */
     private CompletionStage<DataItem> getNewDataItem(Messages.DataPutRequest req, List<Messages.NodeInfo> responsible) {
         Long key = req.item.getKey();
-        CompletionStage<List<Messages.GetReplicaResponse>> readQuorumFuture = readReplicasFromQuorum(key, responsible, W);
+        CompletionStage<List<Messages.DataItemResponse>> readQuorumFuture = readReplicasFromQuorum(key, responsible, W);
 
         return readQuorumFuture.thenApply(responses -> {
             int maxVersion = responses.stream()
@@ -218,6 +219,8 @@ public class NodeActor extends AbstractActor {
                         promise.complete(results);
                     }
                 } else {
+                    // The quorum cannot be met if the number of failures exceeds the maximum allowed failures.
+                    // Max allowed failures = totalFutures - quorum.
                     if (failures.incrementAndGet() > totalFutures - quorum) {
                         promise.completeExceptionally(new TimeoutException("Could not achieve quorum of " + quorum + " from " + totalFutures));
                     }
@@ -233,7 +236,7 @@ public class NodeActor extends AbstractActor {
     private <T> CompletableFuture<T> withTimeout(CompletableFuture<T> future, long timeout, TimeUnit unit) {
         CompletableFuture<T> timeoutFuture = new CompletableFuture<>();
         getContext().system().scheduler().scheduleOnce(
-                // Use scala's duration for Akka scheduler to ensure Java 8 compatibility
+                // Use scala's duration for Akka scheduler
                 scala.concurrent.duration.Duration.create(timeout, unit),
                 () -> timeoutFuture.completeExceptionally(new TimeoutException("Operation timed out")),
                 getContext().dispatcher()
@@ -242,19 +245,37 @@ public class NodeActor extends AbstractActor {
         return future.applyToEither(timeoutFuture, java.util.function.Function.identity());
     }
 
+    /**
+     * Finds the N successor nodes for a given key, starting from the first node whose key is >= the data key.
+     * This implementation uses a binary search for efficiency.
+     */
     private List<Messages.NodeInfo> findResponsibleNodes(Long key, int replication) {
         List<Messages.NodeInfo> res = new ArrayList<>();
-        if (membership.isEmpty()) return res;
+        if (membership.isEmpty()) {
+            return res;
+        }
 
         int n = membership.size();
-        int idx = -1;
-        for (int i = 0; i < n; i++) {
-            if (Long.compareUnsigned(membership.get(i).nodeKey, key) >= 0) {
-                idx = i;
-                break;
+        int idx;
+
+        // Find the first node with a key >= the data key using binary search.
+        // This is more efficient than a linear scan for a large number of nodes.
+        int low = 0;
+        int high = n - 1;
+        int insertionPoint = n; // Default to n, which wraps around to 0.
+
+        while (low <= high) {
+            int mid = low + (high - low) / 2;
+            if (Long.compareUnsigned(membership.get(mid).nodeKey, key) >= 0) {
+                insertionPoint = mid;
+                high = mid - 1; // Continue searching in the left half to find the *first* such node.
+            } else {
+                low = mid + 1; // Search in the right half.
             }
         }
-        if (idx == -1) idx = 0;
+
+        // The insertion point is the starting node. Wrap around if needed.
+        idx = insertionPoint % n;
 
         int toTake = Math.min(replication, n);
         for (int i = 0; i < toTake; i++) {
@@ -272,6 +293,7 @@ public class NodeActor extends AbstractActor {
             if (!iShouldHold) {
                 DataItem item = localStore.get(dataKey);
                 if (item != null) {
+                    // This node is no longer a replica for dataKey, so forward the item to the new responsible nodes.
                     for (Messages.NodeInfo ni : responsible) {
                         ni.ref.tell(new Messages.StoreReplica(item), getSelf());
                     }

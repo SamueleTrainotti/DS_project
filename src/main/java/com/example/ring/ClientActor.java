@@ -4,7 +4,6 @@ import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 import akka.pattern.PatternsCS;
-import akka.util.Timeout;
 
 import java.time.Duration;
 import java.util.concurrent.CompletionStage;
@@ -18,7 +17,7 @@ import java.util.concurrent.CompletionStage;
  *
  * <p>Its responsibilities include:
  * <ul>
- *     <li>Receiving client-level requests, such as {@link Messages.ClientUpdate} and {@link Messages.ClientGet}.</li>
+ *     <li>Receiving client-level requests, such as {@link Messages.DataPutRequest} and {@link Messages.DataGetRequest}.</li>
  *     <li>Translating these requests into the manager-level protocol ({@link Messages.ManagerPut} and
  *     {@link Messages.ManagerGet}).</li>
  *     <li>Sending the translated requests to the {@link RingManager}, specifying the coordinator node.</li>
@@ -33,61 +32,40 @@ public class ClientActor extends AbstractActor {
 
     private final ActorRef manager; // entrypoint to the system
     private final long entryNodeKey; // which node to use as coordinator
-    private final Timeout timeout = Timeout.create(Duration.ofSeconds(3));
+    private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
-    /**
-     * Constructs a ClientActor.
-     *
-     * @param manager      The {@link ActorRef} of the {@link RingManager}.
-     * @param entryNodeKey The key of the node to be used as a coordinator for requests.
-     */
     public ClientActor(ActorRef manager, long entryNodeKey) {
         this.manager = manager;
         this.entryNodeKey = entryNodeKey;
     }
 
-    /**
-     * Creates a {@link Props} object for creating a {@link ClientActor}.
-     *
-     * @param manager      The {@link ActorRef} of the {@link RingManager}.
-     * @param entryNodeKey The key of the node to be used as a coordinator.
-     * @return A {@link Props} configuration object for the ClientActor.
-     */
     public static Props props(ActorRef manager, long entryNodeKey) {
         return Props.create(ClientActor.class, () -> new ClientActor(manager, entryNodeKey));
     }
 
-    /**
-     * Defines the message-handling behavior of the actor.
-     *
-     * @return A {@link Receive} object that maps message types to handler methods.
-     */
     @Override
     public Receive createReceive() {
         return receiveBuilder()
-                .match(Messages.ClientUpdate.class, this::onClientUpdate)
-                .match(Messages.ClientGet.class, this::onClientGet)
+                .match(Messages.DataPutRequest.class, this::onDataPutRequest)
+                .match(Messages.DataGetRequest.class, this::onDataGetRequest)
                 .build();
     }
 
     /**
-     * Handles a {@link Messages.ClientUpdate} request.
+     * Handles a {@link Messages.DataPutRequest} request from the client.
      * <p>It wraps the request in a {@link Messages.ManagerPut} message and sends it to the
      * {@link RingManager}. It then asynchronously handles the acknowledgement.
      *
      * @param req The client update request.
      */
-    private void onClientUpdate(Messages.ClientUpdate req) {
-        Messages.ManagerPut put = new Messages.ManagerPut(
-                entryNodeKey, req.item);
+    private void onDataPutRequest(Messages.DataPutRequest req) {
+        Messages.ManagerPut put = new Messages.ManagerPut(entryNodeKey, req.item);
 
-        @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut =
-                PatternsCS.ask(manager, put, timeout);
+        CompletionStage<Object> fut = PatternsCS.ask(manager, put, TIMEOUT);
 
         fut.whenComplete((reply, ex) -> {
-            if (ex != null) {
-                System.out.println("[client] Update failed: " + ex.getMessage());
+            if (ex != null || !(reply instanceof Messages.PutAck) || !((Messages.PutAck) reply).ok) {
+                System.out.println("[client] Update failed for key=" + req.item.getKey());
             } else {
                 System.out.println("[client] Update OK for key=" + req.item.getKey());
             }
@@ -95,25 +73,29 @@ public class ClientActor extends AbstractActor {
     }
 
     /**
-     * Handles a {@link Messages.ClientGet} request.
+     * Handles a {@link Messages.DataGetRequest} request from the client.
      * <p>It wraps the request in a {@link Messages.ManagerGet} message and sends it to the
      * {@link RingManager}. It then asynchronously handles the response, printing the retrieved value.
      *
      * @param req The client get request.
      */
-    private void onClientGet(Messages.ClientGet req) {
+    private void onDataGetRequest(Messages.DataGetRequest req) {
         Messages.ManagerGet get = new Messages.ManagerGet(entryNodeKey, req.key);
 
-        @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut =
-                PatternsCS.ask(manager, get, timeout);
+        CompletionStage<Object> fut = PatternsCS.ask(manager, get, TIMEOUT);
 
         fut.whenComplete((reply, ex) -> {
             if (ex != null) {
-                System.out.println("[client] Get failed: " + ex.getMessage());
-            } else if (reply instanceof Messages.DataGetResponse) {
-                Messages.DataGetResponse r = (Messages.DataGetResponse) reply;
-                System.out.println("[client] Get result: " + r.item.getKey() + "=" + r.item.getValue());
+                System.out.println("[client] Get failed for key=" + req.key + ": " + ex.getMessage());
+            } else if (reply instanceof Messages.DataItemResponse) {
+                Messages.DataItemResponse r = (Messages.DataItemResponse) reply;
+                if (r.item != null && r.item.getValue() != null) {
+                    System.out.println("[client] Get result: " + r.item.getKey() + "=" + r.item.getValue() + " (v" + r.item.getVersion() + ")");
+                } else {
+                    System.out.println("[client] Get result: key=" + req.key + " not found.");
+                }
+            } else {
+                System.out.println("[client] Get failed for key=" + req.key + ": Unexpected response type.");
             }
         });
     }

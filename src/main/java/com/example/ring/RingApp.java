@@ -2,10 +2,6 @@ package com.example.ring;
 
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
-import akka.pattern.PatternsCS;
-
-import java.time.Duration;
-import java.util.concurrent.CompletionStage;
 
 /**
  * A demo application that showcases the functionality of a distributed ring data store.
@@ -13,9 +9,8 @@ import java.util.concurrent.CompletionStage;
  * <ul>
  *     <li>Creation of a ring with a specified replication factor.</li>
  *     <li>Dynamically adding and removing nodes from the ring.</li>
- *     <li>Putting and getting data from the ring.</li>
+ *     <li>Putting, getting, and updating data from the ring via a client actor.</li>
  *     <li>Automatic data rebalancing when nodes are added or removed.</li>
- *     <li>Client interaction with the ring for data updates and retrieval.</li>
  * </ul>
  * The application uses the Akka actor model to manage concurrency and distribution.
  */
@@ -24,92 +19,83 @@ public class RingApp {
      * The main entry point of the application.
      * <p>This method sets up an Akka {@link ActorSystem}, creates a {@link RingManager},
      * and then simulates a series of operations to demonstrate the ring's features.
-     * These operations include adding nodes, putting and getting data, and observing
-     * the system's behavior during rebalancing after nodes are added or removed.
      *
      * @param args Command line arguments (not used).
-     * @throws Exception if any of the operations fail, particularly the blocking `get()` calls on futures.
+     * @throws InterruptedException if any of the sleep operations are interrupted.
      */
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) throws InterruptedException {
         ActorSystem system = ActorSystem.create("RingSystem");
 
-        // choose replication factor
+        // Choose replication factor
         final int replicationFactor = 3;
 
-        // create manager
+        // Create manager
         ActorRef manager = system.actorOf(RingManager.props(replicationFactor), "manager");
 
-        // create a few nodes with keys 10,20,30,40 (unsigned keys)
+        // Create a client that uses node 10 as its entry point/coordinator
+        ActorRef client = system.actorOf(ClientActor.props(manager, 10L), "client1");
+
+        // --- Initial Setup ---
+        System.out.println(">>> Adding initial nodes: 10, 20, 30, 40");
         manager.tell(new Messages.AddNode(10L), ActorRef.noSender());
         manager.tell(new Messages.AddNode(20L), ActorRef.noSender());
         manager.tell(new Messages.AddNode(30L), ActorRef.noSender());
         manager.tell(new Messages.AddNode(40L), ActorRef.noSender());
 
-        // small sleep so membership messages propagate (demo only)
-        Thread.sleep(500);
-
-        // Put a data item with numeric key 15 -> should be stored on nodes 20,30,40
-        System.out.println("\n>>> put K=15 value='v15' via origin node 10");
-        manager.tell(new Messages.ManagerPut(10L, new DataItem(0, 15L, "v15")), ActorRef.noSender());
-        Thread.sleep(200);
-
-        // Put a data item with numeric key 35 -> should be stored on nodes 40,10,20 (wrap-around)
-        System.out.println("\n>>> put K=35 value='v35' via origin node 30");
-        manager.tell(new Messages.ManagerPut(30L, new DataItem(0, 35L, "v35")), ActorRef.noSender());
-        Thread.sleep(200);
-
-        // Synchronous get via manager (ask manager, which forwards to origin node)
-        System.out.println("\n>>> get K=15,key='t1' via origin node 10 (sync)");
-        @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut1 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L), Duration.ofSeconds(3));
-        Object r1 = fut1.toCompletableFuture().get();
-        System.out.println("GET result: " + r1);
-
-        System.out.println("\n>>> get K=35,key='t2' via origin node 30 (sync)");
-        @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut2 = PatternsCS.ask(manager, new Messages.ManagerGet(30L, 35L), Duration.ofSeconds(3));
-        Object r2 = fut2.toCompletableFuture().get();
-        System.out.println("GET result: " + r2);
-
-        // Now add a node with key 25 (between 20 and 30). This should trigger rebalance:
-        System.out.println("\n>>> adding node 25 (rebalance should move some replicas)");
-        manager.tell(new Messages.AddNode(25L), ActorRef.noSender());
-        Thread.sleep(1000); // wait a moment for rebalance to complete
-
-        // Attempt get again after rebalance
-        System.out.println("\n>>> get K=15,key='t1' via origin node 10 (after adding 25)");
-        @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut3 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L), Duration.ofSeconds(3));
-        Object r3 = fut3.toCompletableFuture().get();
-        System.out.println("GET result after add: " + r3);
-
-        // Remove node 20
-        System.out.println("\n>>> removing node 20 (rebalance should replicate items hosted by 20 to others)");
-        manager.tell(new Messages.RemoveNode(20L), ActorRef.noSender());
+        // In a real app, you wouldn't use Thread.sleep. This is for demo purposes
+        // to allow membership to propagate before sending client requests.
         Thread.sleep(1000);
 
-        System.out.println("\n>>> get K=15,key='t1' after removing node 20");
-        @SuppressWarnings("deprecation")
-        CompletionStage<Object> fut4 = PatternsCS.ask(manager, new Messages.ManagerGet(10L, 15L), Duration.ofSeconds(3));
-        Object r4 = fut4.toCompletableFuture().get();
-        System.out.println("GET after remove: " + r4);
+        // --- Basic PUT/GET ---
+        System.out.println("\n>>> Client putting K=15, V='v15'");
+        client.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15"), replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000); // Allow time for the write to complete
 
-        System.out.println("\n##########");
-        System.out.println("Client usage");
-        System.out.println("##########");
+        System.out.println("\n>>> Client getting K=15");
+        client.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
 
-        // create a client that uses node 10 as coordinator
-        ActorRef client = system.actorOf(ClientActor.props(manager, 10L), "client1");
+        System.out.println("\n>>> Client putting K=35, V='v35' (will wrap around the ring)");
+        client.tell(new Messages.DataPutRequest(new DataItem(0, 35L, "v35"), replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
 
-        // demo sequence
-        System.out.println("Request <update> of '15' on node 15");
-        client.tell(new Messages.ClientUpdate(new DataItem(0, 15L, "22C")), ActorRef.noSender());
-        Thread.sleep(500);
-        System.out.println("Request <get> of 'temperature' on node 15");
-        client.tell(new Messages.ClientGet(15L), ActorRef.noSender());
-        Thread.sleep(1500);
+        System.out.println("\n>>> Client getting K=35");
+        client.tell(new Messages.DataGetRequest(35L, replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
 
-        System.out.println("\nDemo finished -- shutting down.");
+        // --- Rebalancing Demo ---
+        System.out.println("\n>>> Adding node 25. This should trigger rebalancing.");
+        manager.tell(new Messages.AddNode(25L), ActorRef.noSender());
+        Thread.sleep(2000); // Wait a moment for rebalance to complete
+
+        System.out.println("\n>>> Client getting K=15 (after adding node 25)");
+        client.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
+
+        System.out.println("\n>>> Removing node 20. This should trigger rebalancing.");
+        manager.tell(new Messages.RemoveNode(20L), ActorRef.noSender());
+        Thread.sleep(2000); // Wait for rebalance
+
+        System.out.println("\n>>> Client getting K=15 (after removing node 20)");
+        client.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
+
+        // --- Update Demo ---
+        System.out.println("\n>>> Client updating K=15 with V='v15-updated'");
+        client.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15-updated"), replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
+
+        System.out.println("\n>>> Client getting K=15 (to see updated value)");
+        client.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
+
+        // --- Get Non-Existent Key ---
+        System.out.println("\n>>> Client getting K=99 (should not be found)");
+        client.tell(new Messages.DataGetRequest(99L, replicationFactor), ActorRef.noSender());
+        Thread.sleep(1000);
+
+
+        System.out.println("\nDemo finished. Shutting down actor system.");
         system.terminate();
     }
 }

@@ -6,8 +6,12 @@ import akka.actor.Props;
 import akka.pattern.PatternsCS;
 
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletionStage;
+import java.util.stream.Collectors;
 
 /**
  * Manages the lifecycle of nodes in the distributed ring and facilitates communication.
@@ -34,31 +38,14 @@ public class RingManager extends AbstractActor {
     private final int replicationFactor;
     private int nextId = 0;
 
-    /**
-     * Creates a {@link Props} object for creating a {@link RingManager} actor.
-     *
-     * @param replicationFactor The number of replicas to maintain for each data item.
-     * @return A {@link Props} configuration object for the RingManager.
-     */
     public static Props props(int replicationFactor) {
         return Props.create(RingManager.class, () -> new RingManager(replicationFactor));
     }
 
-    /**
-     * Constructs a RingManager.
-     *
-     * @param replicationFactor The replication factor to be used for data storage.
-     */
     public RingManager(int replicationFactor) {
         this.replicationFactor = replicationFactor;
     }
 
-    /**
-     * Defines the message-handling behavior of the actor.
-     * <p>This method maps message types to their corresponding handler methods.
-     *
-     * @return A {@link Receive} object that defines how to handle incoming messages.
-     */
     @Override
     public Receive createReceive() {
         return receiveBuilder()
@@ -69,12 +56,6 @@ public class RingManager extends AbstractActor {
                 .build();
     }
 
-    /**
-     * Handles the {@link Messages.AddNode} message.
-     * <p>Creates a new {@link NodeActor}, adds it to the ring, and broadcasts the updated membership.
-     *
-     * @param msg The message containing the key of the node to add.
-     */
     private void onAddNode(Messages.AddNode msg) {
         long nodeKey = msg.nodeKey;
         if (nodesByKey.containsKey(nodeKey)) {
@@ -87,12 +68,6 @@ public class RingManager extends AbstractActor {
         System.out.println("[manager] added node " + Long.toUnsignedString(nodeKey));
     }
 
-    /**
-     * Handles the {@link Messages.RemoveNode} message.
-     * <p>Removes the specified node from the ring, stops its actor, and broadcasts the updated membership.
-     *
-     * @param msg The message containing the key of the node to remove.
-     */
     private void onRemoveNode(Messages.RemoveNode msg) {
         long nodeKey = msg.nodeKey;
         ActorRef ref = nodesByKey.remove(nodeKey);
@@ -105,61 +80,56 @@ public class RingManager extends AbstractActor {
         }
     }
 
-    /**
-     * Handles the {@link Messages.ManagerPut} message.
-     * <p>Forwards a data put request to the specified origin node.
-     *
-     * @param msg The message containing the origin node key and the data item to store.
-     */
     private void onManagerPut(Messages.ManagerPut msg) {
         ActorRef origin = nodesByKey.get(msg.originNodeKey);
-        if (origin == null) {
-            getSender().tell(new Messages.PutAck(false), getSelf());
-            return;
-        }
-        // forward a DataPutRequest to the chosen node (origin)
-        origin.tell(new Messages.DataPutRequest(msg.item, replicationFactor), getSelf());
-        getSender().tell(new Messages.PutAck(true), getSelf());
-    }
-
-    /**
-     * Handles the {@link Messages.ManagerGet} message.
-     * <p>Forwards a data get request to the specified origin node and pipes the result back to the original sender.
-     *
-     * @param msg The message containing the origin node key and the key of the data to retrieve.
-     */
-    private void onManagerGet(Messages.ManagerGet msg) {
-        ActorRef origin = nodesByKey.get(msg.originNodeKey);
-        if (origin == null) {
-            DataItem tmp = new DataItem(0, msg.key, null);
-            getSender().tell(new Messages.DataGetResponse(tmp), getSelf());
-            return;
-        }
-        // ask the origin node to perform a DataGetRequest (which will consult responsible nodes)
-        CompletionStage<Object> future = PatternsCS.ask(origin, new Messages.DataGetRequest(msg.key, replicationFactor), Duration.ofSeconds(3));
         final ActorRef replyTo = getSender();
+
+        if (origin == null) {
+            replyTo.tell(new Messages.PutAck(false), getSelf());
+            return;
+        }
+
+        Duration timeout = Duration.ofSeconds(7);
+        CompletionStage<Object> future = PatternsCS.ask(origin, new Messages.DataPutRequest(msg.item, replicationFactor), timeout);
+
         future.whenComplete((resp, ex) -> {
             if (ex != null) {
-                DataItem tmp = new DataItem(0, msg.key, null);
-                replyTo.tell(new Messages.DataGetResponse(tmp), getSelf());
+                replyTo.tell(new Messages.PutAck(false), getSelf());
             } else {
                 replyTo.tell(resp, getSelf());
             }
         });
     }
 
-    /**
-     * Broadcasts the current ring membership to all nodes.
-     * <p>This method is called whenever a node is added or removed, ensuring all nodes have a consistent view.
-     */
-    private void broadcastMembership() {
-        List<Messages.NodeInfo> infos = new ArrayList<>();
-        for (Map.Entry<Long, ActorRef> e : nodesByKey.entrySet()) {
-            infos.add(new Messages.NodeInfo(e.getKey(), e.getValue()));
+    private void onManagerGet(Messages.ManagerGet msg) {
+        ActorRef origin = nodesByKey.get(msg.originNodeKey);
+        if (origin == null) {
+            DataItem tmp = new DataItem(0, msg.key, null);
+            getSender().tell(new Messages.DataItemResponse(tmp), getSelf());
+            return;
         }
-        // send to all nodes
+
+        CompletionStage<Object> future = PatternsCS.ask(origin, new Messages.DataGetRequest(msg.key, replicationFactor), Duration.ofSeconds(5));
+        final ActorRef replyTo = getSender();
+        future.whenComplete((resp, ex) -> {
+            if (ex != null) {
+                DataItem tmp = new DataItem(0, msg.key, null);
+                replyTo.tell(new Messages.DataItemResponse(tmp), getSelf());
+            } else {
+                replyTo.tell(resp, getSelf());
+            }
+        });
+    }
+
+    private void broadcastMembership() {
+        List<Messages.NodeInfo> infos = nodesByKey.entrySet().stream()
+                .map(e -> new Messages.NodeInfo(e.getKey(), e.getValue()))
+                .collect(Collectors.toList());
+
+        Messages.UpdateMembership membershipMessage = new Messages.UpdateMembership(infos);
+
         for (ActorRef node : nodesByKey.values()) {
-            node.tell(new Messages.UpdateMembership(infos), getSelf());
+            node.tell(membershipMessage, getSelf());
         }
     }
 }

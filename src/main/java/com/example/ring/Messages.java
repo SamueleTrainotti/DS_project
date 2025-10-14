@@ -20,12 +20,6 @@ public class Messages {
         /** The {@link ActorRef} of the node actor. */
         public final ActorRef ref;
 
-        /**
-         * Constructs a NodeInfo object.
-         *
-         * @param nodeKey The node's key.
-         * @param ref     The node's actor reference.
-         */
         public NodeInfo(long nodeKey, ActorRef ref) {
             this.nodeKey = nodeKey;
             this.ref = ref;
@@ -44,11 +38,6 @@ public class Messages {
         /** A list of all nodes currently in the ring. */
         public final List<NodeInfo> nodes;
 
-        /**
-         * Constructs an UpdateMembership message.
-         *
-         * @param nodes The new list of nodes.
-         */
         public UpdateMembership(List<NodeInfo> nodes) { this.nodes = nodes; }
     }
 
@@ -60,17 +49,9 @@ public class Messages {
      * A request sent to a coordinator node to store a data item in the ring.
      */
     public static class DataPutRequest implements Serializable {
-        /** The data item to be stored. */
         public final DataItem item;
-        /** The replication factor for this operation. */
         public final int replicationFactor;
 
-        /**
-         * Constructs a DataPutRequest.
-         *
-         * @param item              The data item.
-         * @param replicationFactor The replication factor.
-         */
         public DataPutRequest(DataItem item, int replicationFactor) {
             this.item = item;
             this.replicationFactor = replicationFactor;
@@ -81,17 +62,9 @@ public class Messages {
      * A request sent to a coordinator node to retrieve a data item from the ring.
      */
     public static class DataGetRequest implements Serializable {
-        /** The key of the data item to retrieve. */
         public final Long key;
-        /** The replication factor for this operation. */
         public final int replicationFactor;
 
-        /**
-         * Constructs a DataGetRequest.
-         *
-         * @param key               The key of the item.
-         * @param replicationFactor The replication factor.
-         */
         public DataGetRequest(Long key, int replicationFactor) {
             this.key = key;
             this.replicationFactor = replicationFactor;
@@ -99,20 +72,23 @@ public class Messages {
     }
 
     /**
-     * A response to a {@link DataGetRequest}, containing the requested data item.
+     * A generic response for any request that returns a single data item.
+     * The value may be null if the item was not found.
      */
-    public static class DataGetResponse implements Serializable {
-        /** The retrieved data item. The value may be null if the item was not found. */
+    public static class DataItemResponse implements Serializable {
         public final DataItem item;
 
-        /**
-         * Constructs a DataGetResponse.
-         *
-         * @param item The data item.
-         */
-        public DataGetResponse(DataItem item) {
+        public DataItemResponse(DataItem item) {
             this.item = item;
         }
+    }
+
+    /**
+     * A generic acknowledgement message for a PUT/write operation, indicating success or failure.
+     */
+    public static class PutAck implements Serializable {
+        public final boolean ok;
+        public PutAck(boolean ok) { this.ok = ok; }
     }
 
     // ---------------------------
@@ -123,14 +99,8 @@ public class Messages {
      * An instruction from a coordinator to a replica node to store a copy of a data item.
      */
     public static class StoreReplica implements Serializable {
-        /** The data item to be stored as a replica. */
         public final DataItem item;
 
-        /**
-         * Constructs a StoreReplica message.
-         *
-         * @param item The data item.
-         */
         public StoreReplica(DataItem item) {
             this.item = item;
         }
@@ -140,42 +110,11 @@ public class Messages {
      * A request from a coordinator to a replica node to retrieve a copy of a data item.
      */
     public static class GetReplica implements Serializable {
-        /** The key of the data item to retrieve. */
         public final Long key;
 
-        /**
-         * Constructs a GetReplica message.
-         *
-         * @param key The key of the item.
-         */
         public GetReplica(Long key) {
             this.key = key;
         }
-    }
-
-    /**
-     * A response from a replica node to a coordinator for a {@link GetReplica} request.
-     */
-    public static class GetReplicaResponse implements Serializable {
-        /** The data item from the replica. */
-        public final DataItem item;
-
-        /**
-         * Constructs a GetReplicaResponse.
-         *
-         * @param item The data item.
-         */
-        public GetReplicaResponse(DataItem item) {
-            this.item  = item;
-        }
-    }
-
-    /**
-     * A generic acknowledgement message for a PUT operation, indicating success or failure.
-     */
-    public static class PutAck implements Serializable {
-        public final boolean ok;
-        public PutAck(boolean ok) { this.ok = ok; }
     }
 
     // ----------------
@@ -223,50 +162,4 @@ public class Messages {
             this.key = key;
         }
     }
-
-    // ------------------
-    // Client-level API
-    // ------------------
-
-    /**
-     * A high-level message from a client to update/put a data item.
-     */
-    public static class ClientUpdate implements Serializable {
-        public final DataItem item;
-
-        public ClientUpdate(DataItem item) {
-            this.item = item;
-        }
-    }
-
-    /**
-     * A high-level message from a client to get a data item.
-     */
-    public static class ClientGet implements Serializable {
-        public final Long key;
-
-        public ClientGet(Long key) {
-            this.key = key;
-        }
-    }
-
-    /**
-     * An acknowledgement from a single replica for a write operation.
-     */
-    public static class WriteAck implements Serializable {
-        public final boolean ok;
-        public WriteAck(boolean ok) { this.ok = ok; }
-    }
-
-    /**
-     * A response from a single replica for a read operation.
-     */
-    public static class ReadResponse implements Serializable {
-        public final DataItem item;
-
-        public ReadResponse(DataItem item) {
-            this.item = item;
-        }
-    }
-
 }
