@@ -32,7 +32,7 @@ public class Messages {
     }
 
     /**
-     * A message sent from the {@link RingManager} to all nodes to inform them of a change in membership.
+     * A message sent to all nodes to inform them of a change in membership.
      */
     public static class UpdateMembership implements Serializable {
         /** A list of all nodes currently in the ring. */
@@ -118,11 +118,11 @@ public class Messages {
     }
 
     // ----------------
-    // Manager messages
+    // Control messages
     // ----------------
 
     /**
-     * A message to the {@link RingManager} to add a new node to the ring.
+     * A message to add a new node to the ring.
      */
     public static class AddNode implements Serializable {
         public final long nodeKey;
@@ -130,36 +130,10 @@ public class Messages {
     }
 
     /**
-     * A message to the {@link RingManager} to remove a node from the ring.
+     * A message to remove a node from the ring.
      */
     public static class RemoveNode implements Serializable {
         public final long nodeKey;
         public RemoveNode(long nodeKey) { this.nodeKey = nodeKey; }
-    }
-
-    /**
-     * A message to the {@link RingManager} to forward a PUT request to a specific origin node.
-     */
-    public static class ManagerPut implements Serializable {
-        public final long originNodeKey;
-        public final DataItem item;
-
-        public ManagerPut(long originNodeKey, DataItem item) {
-            this.originNodeKey = originNodeKey;
-            this.item = item;
-        }
-    }
-
-    /**
-     * A message to the {@link RingManager} to forward a GET request to a specific origin node.
-     */
-    public static class ManagerGet implements Serializable {
-        public final long originNodeKey;
-        public final Long key;
-
-        public ManagerGet(long originNodeKey, Long key) {
-            this.originNodeKey = originNodeKey;
-            this.key = key;
-        }
     }
 }
