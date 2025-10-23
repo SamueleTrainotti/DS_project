@@ -71,10 +71,17 @@ public class RingApp {
         client2.tell(new Messages.DataGetRequest(35L, replicationFactor), ActorRef.noSender());
         Thread.sleep(1000);
 
+        // --- Telling a node to crash
+        System.out.println("\n>>> Telling node 30 to crash");
+        nodesByKey.get(30L).tell(new Messages.CrashNode(), ActorRef.noSender());
+        Thread.sleep(2000);
+
         // --- Rebalancing Demo ---
-        System.out.println("\n>>> Adding node 25. This should trigger rebalancing.");
-        addNode(system, 25L, replicationFactor);
+        System.out.println("\n>>> Adding node 35. This should trigger rebalancing.");
+        addNode(system, 35L, replicationFactor);
         Thread.sleep(2000); // Wait a moment for rebalance to complete
+        // Debug print
+        _debug_Print();
 
         System.out.println("\n>>> Client 1 getting K=15 (after adding node 25)");
         client1.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
@@ -83,6 +90,8 @@ public class RingApp {
         System.out.println("\n>>> Removing node 20. This should trigger rebalancing.");
         removeNode(20L);
         Thread.sleep(2000); // Wait for rebalance
+        // Debug print
+        _debug_Print();
 
         System.out.println("\n>>> Client 1 getting K=15 (after removing node 20)");
         client1.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
@@ -102,9 +111,29 @@ public class RingApp {
         client1.tell(new Messages.DataGetRequest(99L, replicationFactor), ActorRef.noSender());
         Thread.sleep(1000);
 
+        // --- Telling node 30 to recover
+        System.out.println("\n>>> Telling node 30 to recover");
+        nodesByKey.get(30L).tell(new Messages.RecoverNode(), ActorRef.noSender());
+        Thread.sleep(10000);
+
+        // Debug print
+        _debug_Print();
+
 
         System.out.println("\nDemo finished. Shutting down actor system.");
         system.terminate();
+    }
+
+    private static void _debug_Print() {
+        // DEBUG print
+        for (ActorRef node : nodesByKey.values()) {
+            node.tell(new Messages._debug_GetStoredItems(), ActorRef.noSender());
+        }
+        try {
+            Thread.sleep(5000);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void addNode(ActorSystem system, long nodeKey, int replicationFactor) {
@@ -121,6 +150,7 @@ public class RingApp {
     private static void removeNode(long nodeKey) {
         ActorRef ref = nodesByKey.remove(nodeKey);
         if (ref != null) {
+            ref.tell(new Messages.ForwardData(), ActorRef.noSender());
             ref.tell(akka.actor.PoisonPill.getInstance(), ActorRef.noSender());
             broadcastMembership();
             System.out.println("[main] removed node " + Long.toUnsignedString(nodeKey));

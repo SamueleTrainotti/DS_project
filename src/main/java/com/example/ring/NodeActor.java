@@ -12,6 +12,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -61,7 +62,126 @@ public class NodeActor extends AbstractActor {
                 .match(Messages.StoreReplica.class, this::onStoreReplica)
                 .match(Messages.DataGetRequest.class, this::onDataGetRequest)
                 .match(Messages.GetReplica.class, this::onGetReplica)
+                .match(Messages.CrashNode.class, this::onCrash)
+                .match(Messages.RecoverNode.class, this::onRecover)
+                .match(Messages.GetTopology.class, this::onGetTopology)
+                .match(Messages.GetAllData.class, this::onGetAllData)
+                .match(Messages._debug_GetStoredItems.class, this::onDebugGetAllData)
+                .match(Messages.ForwardData.class, this::onForwardData)
                 .build();
+    }
+
+    private void onForwardData(Messages.ForwardData forwardData) {
+        for (DataItem item : localStore.getAll()) {
+
+            // set replicationFactor to +1 to account for current node leaving the ring
+            List<Messages.NodeInfo> responsible = findResponsibleNodes(item.getKey(), replicationFactor +1);
+            for (Messages.NodeInfo ni : responsible) {
+                ni.ref.tell(new Messages.StoreReplica(item), getSelf());
+            }
+
+        }
+    }
+
+    private Receive crashedReceive() {
+        return receiveBuilder()
+                .match(Messages.RecoverNode.class, this::onRecover)
+                .build();
+    }
+
+    private void onDebugGetAllData(Messages._debug_GetStoredItems debugGetStoredItems) {
+        System.out.println("[DEBUG] Stored items in node " + Long.toUnsignedString(nodeKey) + ": " + localStore);
+    }
+
+    private void onGetTopology(Messages.GetTopology getTopology) {
+        final ActorRef replyTo = getSender();
+        replyTo.tell(new Messages.UpdateMembership(new ArrayList<>(membership)), getSelf());
+    }
+
+    private void onGetAllData(Messages.GetAllData msg) {
+        getSender().tell(new Messages.AllDataResponse(new ArrayList<DataItem>(localStore.getAll())), getSelf());
+    }
+
+    private Receive recoveringReceive() {
+        return receiveBuilder()
+                .match(Messages.UpdateMembership.class, this::recoveringUpdateMembership)
+                .build();
+    }
+
+    private void onRecover(Messages.RecoverNode recoverNode) {
+        getContext().become(recoveringReceive());
+        for (Messages.NodeInfo ni : membership) {
+            ni.ref.tell(new Messages.GetTopology(), getSelf());
+        }
+    }
+
+    private void onCrash(Messages.CrashNode crashNode) {
+        getContext().become(crashedReceive());
+    }
+
+    /**
+     * Handles a membership update while the node is in a recovering state.
+     * This method orchestrates the data recovery process.
+     *
+     * @param msg The latest membership update.
+     */
+    private void recoveringUpdateMembership(Messages.UpdateMembership msg) {
+        // Phase 1: Rebalance existing data based on the new membership.
+        // This ensures that any data this node *should no longer* hold is forwarded.
+        onUpdateMembership(msg);
+
+        // Phase 2: Query a predecessor node to retrieve data that this node is now
+        // responsible for, but might have missed while crashed.
+
+        // Find this node's position in the sorted membership list.
+        int i = 0;
+        for (i = 0; i < membership.size(); i++) {
+            if (membership.get(i).nodeKey == this.nodeKey)
+                break;
+        }
+
+        // If membership is empty or this node isn't found (shouldn't happen if membership is valid),
+        // log an error and exit recovery.
+        if (membership.isEmpty() || i == membership.size()) {
+            System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] recovered, but membership is empty or node not found.");
+            getContext().unbecome();
+            return;
+        }
+
+        // Determine the direct predecessor in the ring. This node is likely to hold
+        // data that this recovering node is now responsible for.
+        // The modulo operator handles wrapping around the ring.
+        int predecessorIndex = (i - replicationFactor + 1 + membership.size()) % membership.size();
+        ActorRef predecessorRef = membership.get(predecessorIndex).ref;
+
+        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] recovering: querying predecessor " + Long.toUnsignedString(membership.get(predecessorIndex).nodeKey) + " for data.");
+
+        // Send a request to the predecessor to get all its data.
+        // Use PatternsCS.ask for an asynchronous request-response pattern.
+        PatternsCS.ask(predecessorRef, new Messages.GetAllData(), T)
+                .whenComplete((response, ex) -> {
+                    if (ex == null && response instanceof Messages.AllDataResponse) {
+                        Messages.AllDataResponse allData = (Messages.AllDataResponse) response;
+                        // Iterate through the received data items.
+                        for (DataItem item : allData.data) {
+                            // For each item, determine if this node is now responsible for it
+                            // based on the current (recovered) membership and replication factor.
+                            List<Messages.NodeInfo> responsibleNodes = findResponsibleNodes(item.getKey(), replicationFactor);
+                            if (responsibleNodes.stream().anyMatch(ni -> ni.ref.equals(getSelf()))) {
+                                // If this node is responsible, store the item locally.
+                                localStore.store(item);
+                                System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] recovered: stored item " + Long.toUnsignedString(item.getKey()));
+                            }
+                        }
+                        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] recovered successfully.");
+                    } else {
+                        // Log any errors during data retrieval from the predecessor.
+                        System.err.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] recovery failed: " + (ex != null ? ex.getMessage() : "Unexpected response type."));
+                    }
+                    // Exit the recovering state, regardless of whether data recovery was fully successful.
+                    // The node is now ready to process normal messages.
+                    getContext().unbecome();
+                });
     }
 
     private void onUpdateMembership(Messages.UpdateMembership msg) {
@@ -242,7 +362,7 @@ public class NodeActor extends AbstractActor {
                 getContext().dispatcher()
         );
 
-        return future.applyToEither(timeoutFuture, java.util.function.Function.identity());
+        return future.applyToEither(timeoutFuture, Function.identity());
     }
 
     /**
@@ -288,6 +408,7 @@ public class NodeActor extends AbstractActor {
         Set<Long> keys = new HashSet<>(localStore.getKeys());
         for (Long dataKey : keys) {
             List<Messages.NodeInfo> responsible = findResponsibleNodes(dataKey, this.replicationFactor);
+            System.out.println("[DEBUG] responsible computated for the key " + Long.toUnsignedString(dataKey) + ": " + responsible);
             boolean iShouldHold = responsible.stream().anyMatch(ni -> ni.ref.equals(getSelf()));
 
             if (!iShouldHold) {
@@ -300,6 +421,8 @@ public class NodeActor extends AbstractActor {
                 }
                 localStore.remove(dataKey);
                 System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] rebalance: removed and forwarded item " + Long.toUnsignedString(dataKey));
+            } else {
+
             }
         }
     }

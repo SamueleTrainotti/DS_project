@@ -4,6 +4,7 @@ import akka.actor.ActorRef;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A container for all the message classes used for communication between actors in the ring system.
@@ -117,6 +118,24 @@ public class Messages {
         }
     }
 
+    /**
+     * A request from a node to another node to get all its stored data.
+     */
+    public static class GetAllData implements Serializable {
+        public GetAllData() {}
+    }
+
+    /**
+     * A response containing all data items stored by a node.
+     */
+    public static class AllDataResponse implements Serializable {
+        public final List<DataItem> data;
+
+        public AllDataResponse(List<DataItem> data) {
+            this.data = data;
+        }
+    }
+
     // ----------------
     // Control messages
     // ----------------
@@ -135,5 +154,40 @@ public class Messages {
     public static class RemoveNode implements Serializable {
         public final long nodeKey;
         public RemoveNode(long nodeKey) { this.nodeKey = nodeKey; }
+    }
+
+    /**
+     * A message to tell the node to forward its data to next nodes
+     */
+    public static class ForwardData implements Serializable {
+        public ForwardData() {}
+    }
+
+    /**
+     * A message to induce a node to crash
+     */
+    public static class CrashNode implements Serializable {
+        public CrashNode() {}
+    }
+
+    /**
+     * A message to induce a node to recover from a crash
+     */
+    public static class RecoverNode implements Serializable {
+        public RecoverNode() {}
+    }
+
+    /**
+     * A message to ask for the topology
+     */
+    public static class GetTopology implements Serializable {
+        public GetTopology() {}
+    }
+
+    // ----------------
+    // Debug and test Messages
+    // ----------------
+    public static class _debug_GetStoredItems implements Serializable {
+        public _debug_GetStoredItems() {}
     }
 }
