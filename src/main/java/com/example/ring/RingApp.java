@@ -3,6 +3,7 @@ package com.example.ring;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -25,6 +26,12 @@ public class RingApp {
     private static final Map<Long, ActorRef> nodesByKey = new HashMap<>();
     private static int nextId = 0;
 
+    // --- Configurable Parameters ---
+    private static final int REPLICATION_FACTOR = 3;
+    private static final int W = 2; // Write quorum
+    private static final int R = 2; // Read quorum
+    private static final Duration T = Duration.ofSeconds(3); // Timeout
+
     /**
      * The main entry point of the application.
      * <p>This method sets up an Akka {@link ActorSystem}, creates the nodes,
@@ -36,15 +43,12 @@ public class RingApp {
     public static void main(String[] args) throws InterruptedException {
         ActorSystem system = ActorSystem.create("RingSystem");
 
-        // Choose replication factor
-        final int replicationFactor = 3;
-
         // --- Initial Setup ---
         System.out.println(">>> Adding initial nodes: 10, 20, 30, 40");
-        addNode(system, 10L, replicationFactor);
-        addNode(system, 20L, replicationFactor);
-        addNode(system, 30L, replicationFactor);
-        addNode(system, 40L, replicationFactor);
+        addNode(system, 10L);
+        addNode(system, 20L);
+        addNode(system, 30L);
+        addNode(system, 40L);
 
         // Create clients that use nodes as their entry points
         ActorRef client1 = system.actorOf(ClientActor.props(nodesByKey.get(10L)), "client1");
@@ -56,19 +60,19 @@ public class RingApp {
 
         // --- Basic PUT/GET ---
         System.out.println("\n>>> Client 1 putting K=15, V='v15'");
-        client1.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15"), replicationFactor), ActorRef.noSender());
+        client1.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15"), REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000); // Allow time for the write to complete
 
         System.out.println("\n>>> Client 1 getting K=15");
-        client1.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Client 2 putting K=35, V='v35' (will wrap around the ring)");
-        client2.tell(new Messages.DataPutRequest(new DataItem(0, 35L, "v35"), replicationFactor), ActorRef.noSender());
+        client2.tell(new Messages.DataPutRequest(new DataItem(0, 35L, "v35"), REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Client 2 getting K=35");
-        client2.tell(new Messages.DataGetRequest(35L, replicationFactor), ActorRef.noSender());
+        client2.tell(new Messages.DataGetRequest(35L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Telling a node to crash
@@ -78,13 +82,13 @@ public class RingApp {
 
         // --- Rebalancing Demo ---
         System.out.println("\n>>> Adding node 35. This should trigger rebalancing.");
-        addNode(system, 35L, replicationFactor);
+        addNode(system, 35L);
         Thread.sleep(2000); // Wait a moment for rebalance to complete
         // Debug print
         _debug_Print();
 
         System.out.println("\n>>> Client 1 getting K=15 (after adding node 25)");
-        client1.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Removing node 20. This should trigger rebalancing.");
@@ -94,21 +98,21 @@ public class RingApp {
         _debug_Print();
 
         System.out.println("\n>>> Client 1 getting K=15 (after removing node 20)");
-        client1.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Update Demo ---
         System.out.println("\n>>> Client 1 updating K=15 with V='v15-updated'");
-        client1.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15-updated"), replicationFactor), ActorRef.noSender());
+        client1.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15-updated"), REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Client 1 getting K=15 (to see updated value)");
-        client1.tell(new Messages.DataGetRequest(15L, replicationFactor), ActorRef.noSender());
+        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Get Non-Existent Key ---
         System.out.println("\n>>> Client 1 getting K=99 (should not be found)");
-        client1.tell(new Messages.DataGetRequest(99L, replicationFactor), ActorRef.noSender());
+        client1.tell(new Messages.DataGetRequest(99L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Telling node 30 to recover
@@ -136,12 +140,12 @@ public class RingApp {
         }
     }
 
-    private static void addNode(ActorSystem system, long nodeKey, int replicationFactor) {
+    private static void addNode(ActorSystem system, long nodeKey) {
         if (nodesByKey.containsKey(nodeKey)) {
             System.out.println("[main] node " + Long.toUnsignedString(nodeKey) + " already exists");
             return;
         }
-        ActorRef node = system.actorOf(NodeActor.props(nextId++, nodeKey, replicationFactor), "node" + Long.toUnsignedString(nodeKey));
+        ActorRef node = system.actorOf(NodeActor.props(nextId++, nodeKey, REPLICATION_FACTOR, W, R, T), "node" + Long.toUnsignedString(nodeKey));
         nodesByKey.put(nodeKey, node);
         broadcastMembership();
         System.out.println("[main] added node " + Long.toUnsignedString(nodeKey));

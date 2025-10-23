@@ -35,23 +35,25 @@ public class NodeActor extends AbstractActor {
     private final int id;
     private final long nodeKey;
     private final int replicationFactor;
-
-    // FIXME: These values are hardcoded. For more flexibility, they could be passed via configuration.
-    private static final int W = 2; // write quorum
-    private static final int R = 2; // read quorum
-    private static final Duration T = Duration.ofSeconds(3);
+    private final int W;
+    private final int R;
+    private final Duration T;
 
     private List<Messages.NodeInfo> membership = new ArrayList<>();
     private final LocalStore localStore = new LocalStore();
+    private boolean hasJoined = false;
 
-    private NodeActor(int id, long nodeKey, int replicationFactor) {
+    private NodeActor(int id, long nodeKey, int replicationFactor, int W, int R, Duration T) {
         this.id = id;
         this.nodeKey = nodeKey;
         this.replicationFactor = replicationFactor;
+        this.W = W;
+        this.R = R;
+        this.T = T;
     }
 
-    public static Props props(int id, long nodeKey, int replicationFactor) {
-        return Props.create(NodeActor.class, () -> new NodeActor(id, nodeKey, replicationFactor));
+    public static Props props(int id, long nodeKey, int replicationFactor, int W, int R, Duration T) {
+        return Props.create(NodeActor.class, () -> new NodeActor(id, nodeKey, replicationFactor, W, R, T));
     }
 
     @Override
@@ -67,20 +69,23 @@ public class NodeActor extends AbstractActor {
                 .match(Messages.GetTopology.class, this::onGetTopology)
                 .match(Messages.GetAllData.class, this::onGetAllData)
                 .match(Messages._debug_GetStoredItems.class, this::onDebugGetAllData)
-                .match(Messages.ForwardData.class, this::onForwardData)
+                .match(Messages.Leave.class, this::onLeave)
                 .build();
     }
 
-    private void onForwardData(Messages.ForwardData forwardData) {
+    private void onLeave(Messages.Leave msg) {
+        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] leaving gracefully. Transferring data...");
+
         for (DataItem item : localStore.getAll()) {
-
-            // set replicationFactor to +1 to account for current node leaving the ring
-            List<Messages.NodeInfo> responsible = findResponsibleNodes(item.getKey(), replicationFactor +1);
+            List<Messages.NodeInfo> responsible = findResponsibleNodes(item.getKey(), replicationFactor + 1);
             for (Messages.NodeInfo ni : responsible) {
-                ni.ref.tell(new Messages.StoreReplica(item), getSelf());
+                if (!ni.ref.equals(getSelf())) { // Don't send to self
+                    ni.ref.tell(new Messages.StoreReplica(item), getSelf());
+                }
             }
-
         }
+        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] data transfer initiated. Stopping actor.");
+        getContext().stop(getSelf());
     }
 
     private Receive crashedReceive() {
@@ -189,13 +194,53 @@ public class NodeActor extends AbstractActor {
         sorted.sort(Comparator.comparing(a -> a.nodeKey, Long::compareUnsigned));
         this.membership = sorted;
         System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] membership updated: " + membership);
-        rebalance();
+
+        if (!hasJoined) {
+            hasJoined = true;
+            joinRing();
+        } else {
+            rebalance();
+        }
     }
 
-    /**
-     * Handles a request to get data from the ring, ensuring sequential consistency.
-     * This node acts as the coordinator.
-     */
+    private void joinRing() {
+        if (membership.size() <= 1) {
+            return; // Nothing to do if we are the only node
+        }
+
+        int selfIndex = -1;
+        for (int i = 0; i < membership.size(); i++) {
+            if (membership.get(i).ref.equals(getSelf())) {
+                selfIndex = i;
+                break;
+            }
+        }
+
+        if (selfIndex == -1) return; // Should not happen
+
+        int successorIndex = (selfIndex + 1) % membership.size();
+        ActorRef successor = membership.get(successorIndex).ref;
+
+        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] joining: querying successor for data.");
+
+        PatternsCS.ask(successor, new Messages.GetAllData(), T)
+                .whenComplete((response, ex) -> {
+                    if (ex == null && response instanceof Messages.AllDataResponse) {
+                        Messages.AllDataResponse allData = (Messages.AllDataResponse) response;
+                        for (DataItem item : allData.data) {
+                            List<Messages.NodeInfo> responsibleNodes = findResponsibleNodes(item.getKey(), replicationFactor);
+                            if (responsibleNodes.stream().anyMatch(ni -> ni.ref.equals(getSelf()))) {
+                                localStore.store(item);
+                                System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] joining: stored item " + Long.toUnsignedString(item.getKey()));
+                            }
+                        }
+                        System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] joined successfully.");
+                    } else {
+                        System.err.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] join failed: " + (ex != null ? ex.getMessage() : "Unexpected response type."));
+                    }
+                });
+    }
+
     private void onDataGetRequest(Messages.DataGetRequest req) {
         final ActorRef replyTo = getSender();
         final Long key = req.key;
@@ -242,7 +287,7 @@ public class NodeActor extends AbstractActor {
     private void onStoreReplica(Messages.StoreReplica msg) {
         localStore.store(msg.item);
         System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] StoreReplica stored: " + msg.item.getKey() + "=" + msg.item.getValue() + " v" + msg.item.getVersion());
-        getSender().tell(new Messages.PutAck(true), getSelf()); // Acknowledge the write
+        getSender().tell(new Messages.PutAck(true), getSelf());
     }
 
     /**
@@ -275,7 +320,7 @@ public class NodeActor extends AbstractActor {
                 .map(response -> response.item)
                 .filter(Objects::nonNull)
                 .max(Comparator.comparing(DataItem::getVersion))
-                .orElse(new DataItem(0, key, null)); // Or not-found if all were null
+                .orElse(new DataItem(0, key, null));
     }
 
     /**
@@ -382,15 +427,15 @@ public class NodeActor extends AbstractActor {
         // This is more efficient than a linear scan for a large number of nodes.
         int low = 0;
         int high = n - 1;
-        int insertionPoint = n; // Default to n, which wraps around to 0.
+        int insertionPoint = n;
 
         while (low <= high) {
             int mid = low + (high - low) / 2;
             if (Long.compareUnsigned(membership.get(mid).nodeKey, key) >= 0) {
                 insertionPoint = mid;
-                high = mid - 1; // Continue searching in the left half to find the *first* such node.
+                high = mid - 1;
             } else {
-                low = mid + 1; // Search in the right half.
+                low = mid + 1;
             }
         }
 
@@ -421,8 +466,6 @@ public class NodeActor extends AbstractActor {
                 }
                 localStore.remove(dataKey);
                 System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] rebalance: removed and forwarded item " + Long.toUnsignedString(dataKey));
-            } else {
-
             }
         }
     }

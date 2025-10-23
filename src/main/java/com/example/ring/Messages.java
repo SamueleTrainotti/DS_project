@@ -4,7 +4,6 @@ import akka.actor.ActorRef;
 
 import java.io.Serializable;
 import java.util.List;
-import java.util.Map;
 
 /**
  * A container for all the message classes used for communication between actors in the ring system.
@@ -154,6 +153,13 @@ public class Messages {
     public static class RemoveNode implements Serializable {
         public final long nodeKey;
         public RemoveNode(long nodeKey) { this.nodeKey = nodeKey; }
+    }
+
+    /**
+     * A message to tell a node to leave the ring gracefully.
+     */
+    public static class Leave implements Serializable {
+        public Leave() {}
     }
 
     /**
