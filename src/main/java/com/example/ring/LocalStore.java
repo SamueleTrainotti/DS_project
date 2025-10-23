@@ -94,4 +94,19 @@ public class LocalStore {
             localStore.remove(temp);
         }
     }
+
+    public List<DataItem> getAll() {
+        return localStore;
+    }
+
+    @Override
+    public String toString() {
+        String out = "";
+
+        for (DataItem dataItem : localStore) {
+            out += "\t\t|" + dataItem.getKey() + "=" + dataItem.getValue() + "|";
+        }
+
+        return out;
+    }
 }
