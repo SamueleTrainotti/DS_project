@@ -1,8 +1,9 @@
 \documentclass{article}
+\usepackage{amsmath}
 \usepackage{graphicx} % Required for inserting images
 
-\title{Project Report}
-\author{Your Name}
+\title{Distributed Systems - Project Report}
+\author{Giulian Biolo, Samuele Trainotti}
 \date{\today}
 
 \begin{document}
@@ -10,19 +11,104 @@
 \maketitle
 
 \begin{abstract}
-    This report provides a comprehensive overview of the project, detailing the objectives, methods, and key findings. The primary goal of this project was to address the challenge of [briefly state the problem]. We developed a novel approach that combines [mention key techniques or technologies] to achieve [mention the main outcome]. The results demonstrate the effectiveness of our proposed solution, showing significant improvements over existing methods. This document will walk you through the entire process, from the initial concept to the final evaluation.
+%%%    This report provides a comprehensive overview of the project, detailing the objectives, methods, and key findings. The primary goal of this project was to address the challenge of [briefly state the problem]. We developed a novel approach that combines [mention key techniques or technologies] to achieve [mention the main outcome]. The results demonstrate the effectiveness of our proposed solution, showing significant improvements over existing methods. This document will walk you through the entire process, from the initial concept to the final evaluation.
+This paper presents a distributed key-value store built on a ring topology with sequential consistency guarantees. The system employs quorum-based replication ($N=3$, $W=2$, $R=2$) and supports dynamic membership through join and leave operations. We implement a two-phase write protocol combining version-based conflict resolution with quorum consensus. The architecture leverages the Akka actor model for concurrency management. We analyze consistency properties, message complexity, and discuss design trade-offs between simplicity and efficiency.
 \end{abstract}
 
 \section{Introduction}
-    The introduction lays the groundwork for the project, providing context and motivation. It starts by highlighting the importance of [mention the project's domain] and the specific problem we aim to solve. We then review the current state of the art, discussing existing solutions and their limitations. The section concludes with a clear statement of our project's objectives and a brief overview of the report's structure, guiding the reader through the subsequent sections.
+    %%%The introduction lays the groundwork for the project, providing context and motivation. It starts by highlighting the importance of [mention the project's domain] and the specific problem we aim to solve. We then review the current state of the art, discussing existing solutions and their limitations. The section concludes with a clear statement of our project's objectives and a brief overview of the report's structure, guiding the reader through the subsequent sections.
+Distributed key-value stores must balance consistency guarantees with performance and availability. We present a system that achieves sequential consistency through quorum-based replication on a ring topology. Key features include: (i) quorum operations with $W + R > N$ ensuring consistency, (ii) version-based conflict resolution with monotonically increasing version numbers, (iii) dynamic membership with automatic data redistribution, and (iv) fault tolerance through crash and recovery protocols.
 
-\section{Methodology}
-    This section provides a detailed description of the methodology employed to achieve the project's objectives. We explain the design of our system, including the architecture, algorithms, and data structures used. Key components of our approach, such as [mention a key component], are elaborated upon with justifications for our design choices. We also describe the experimental setup, including the datasets, evaluation metrics, and software tools used for implementation and analysis. The goal is to provide enough detail for the work to be reproducible.
+The system assumes a crash-stop failure model with no Byzantine failures or network partitions. An external orchestrator manages membership, and data is stored in-memory without persistence. We use the Akka actor model for asynchronous message passing and natural isolation.
 
-\section{Results}
-    In this section, we present the results of our experiments and evaluations. The findings are organized to align with the project's objectives, with each part of the analysis clearly explained. We use tables, figures, and charts to visualize the data and highlight key trends and patterns. A comparative analysis with baseline methods is also included to benchmark the performance of our solution. The results are interpreted in the context of the problem statement, and their statistical significance is discussed where applicable.
+\section{System Architecture}
+
+\subsection{Ring Topology and Data Partitioning}
+
+Nodes are arranged in a logical ring ordered by unsigned 64-bit keys. For data key $k$, the responsible nodes are the first node with key $\geq k$ and its $N-1$ successors (with wrap-around). Given sorted nodes $\{n_1, ..., n_m\}$, responsible nodes for key $k$ are:
+$$\{n_i, n_{(i+1)\mod{m}}, ..., n_{(i+N-1)\mod{m}}\}$$
+where $i$ is the smallest index with $n_i \geq k$. This uses binary search for $O(\log m)$ complexity.
+
+Each node is an Akka actor maintaining a LocalStore (in-memory ArrayList of DataItems). Any node can coordinate client requests, providing decentralization without a dedicated master node.
+
+\subsection{Data Model}
+
+Each data item is a tuple $(version, key, value)$ where version is monotonically increasing. Versions serve dual purposes: (i) conflict resolution by selecting maximum version, and (ii) ordering enforcement for sequential consistency.
+
+\section{Core Protocols}
+
+\subsection{Two-Phase Write Protocol}
+
+Write operations ensure version consistency through two phases:
+
+\textbf{Phase 1 - Version Reading:} Coordinator reads from $W$ replicas, computes $v_{new} = \max(versions) + 1$, and creates item $(v_{new}, k, v)$.
+
+\textbf{Phase 2 - Quorum Write:} Coordinator writes new item to $W$ replicas and waits for acknowledgments.
+
+This guarantees monotonically increasing versions since each write reads current versions before incrementing.
+
+\subsection{Read Operations}
+
+Reads contact $R$ replicas via \texttt{GetReplica} messages and return the item with maximum version. Since $W + R = 4 > 3 = N$, read and write quorums always intersect, ensuring reads observe recent writes.
+
+\subsection{Dynamic Membership}
+
+\subsubsection{Node Join}
+A joining node: (i) receives \texttt{UpdateMembership} broadcast, (ii) queries its successor with \texttt{GetAllData()}, (iii) filters received data to keep only items it's responsible for, and (iv) triggers rebalancing in other nodes. This uses $O(1)$ request-response pairs but transfers unnecessary data—a trade-off for implementation simplicity.
+
+\subsubsection{Node Leave}
+A leaving node: (i) iterates through local items, (ii) computes new responsible nodes, (iii) sends \texttt{StoreReplica} to each new replica (maximum $S \times N$ messages where $S$ is stored items), and (iv) terminates. This ensures targeted transfer only to responsible nodes.
+
+\subsubsection{Automatic Rebalancing}
+Upon membership changes, each node independently: (i) recomputes responsibility for each local key, (ii) forwards items it should no longer hold to new responsible nodes, and (iii) removes forwarded items. This decentralized approach avoids coordination overhead.
+
+\subsection{Crash and Recovery}
+
+\textbf{Crash Simulation:} Nodes transition to a \texttt{crashedReceive()} behavior, ignoring all messages except \texttt{RecoverNode()}.
+
+\textbf{Recovery Protocol:} A recovering node: (i) uses any surviving local data to ask a membership update from any other node, (ii) identifies its predecessor at position $(i - N + 1) \mod m$, (iii) requests all data from predecessor via \texttt{GetAllData()}, (iv) filters and stores items it's now responsible for, and (v) returns to normal operation. The predecessor is chosen because it holds data that the recovering node should reclaim after crash-induced responsibility shifts.
+
+\section{Consistency and Performance Analysis}
+
+\subsection{Sequential Consistency}
+
+The system achieves sequential consistency through three mechanisms:
+
+\textbf{Quorum Intersection:} With $W=2, R=2, N=3$, we have $W + R > N$, ensuring any read quorum intersects any write quorum. Every read observes at least one node from the most recent write quorum.
+
+\textbf{Version Ordering:} The two-phase protocol ensures versions are monotonically increasing. Phase 1 reads current versions from $W$ nodes before Phase 2 writes the incremented version, preventing conflicts. Reads select maximum version from $R$ nodes, guaranteeing observation of recent writes.
+
+\textbf{Coordinator Serialization:} Each operation has a single coordinator executing phases sequentially, providing implicit serialization and total ordering per key.
+
+These mechanisms ensure all operations appear in a consistent sequential order, satisfying sequential consistency requirements. The system does not provide linearizability due to lack of real-time ordering guarantees.
+
+\subsection{Message Complexity}
+
+\textbf{Read:} $O(N)$ messages—N requests to replicas (early termination after R responses) plus response to client.
+
+\textbf{Write:} $O(2N)$ messages—Phase 1 uses $O(N)$ for version reading, Phase 2 uses $O(N)$ for quorum write.
+
+\textbf{Join:} $O(1)$ initial request-response, followed by $O(S \times N)$ rebalancing where $S$ is redistributed items.
+
+\textbf{Leave:} $O(S \times N)$ messages for handoff of $S$ stored items to new replicas.
+
+\subsection{Design Trade-offs}
+
+\textbf{Join Inefficiency:} Transferring all successor data simplifies implementation (reuses existing messages) but wastes bandwidth. Approximately $(N-1)/N$ of transferred data is unnecessary. Alternative: filtered requests where successor computes responsibilities before sending—requires new message types and some added complexity.
+
+\textbf{Consistency vs. Availability:} Configuration $(N=3, W=2, R=2)$ tolerates only 1 node failure, prioritizing consistency over availability. Operations fail rather than return stale data.
+
+\textbf{Two-Phase Overhead:} Doubles write cost but eliminates version conflicts and simplifies recovery logic.
+
+\section{Limitations and Future Work}
+
+Primary limitations include: (i) no persistent storage causes complete data loss on crash, (ii) centralized membership management creates a single point of failure, (iii) no network partition handling, and (iv) tolerance of only one concurrent failure with current quorum configuration.
+
+Improvements could include: write-ahead logging for durability, gossip-based membership for decentralization, anti-entropy processes for replica synchronization, and optimized join protocol to transfer only relevant data.
 
 \section{Conclusion}
-    The conclusion summarizes the key findings of the project and reflects on their implications. We revisit the project's objectives and discuss the extent to which they were met. The main contributions of our work are highlighted, and potential avenues for future research are suggested. We also acknowledge the limitations of our study and propose ways to address them in subsequent work. The section ends with a final thought on the potential impact of our project on the field.
+
+We presented a distributed key-value store achieving sequential consistency through quorum-based replication and version ordering. The system demonstrates that strong consistency is achievable in decentralized architectures using actor-based concurrency. Key contributions include a two-phase write protocol ensuring monotonic versions, analysis showing $O(N)$ reads and $O(2N)$ writes, and dynamic membership with automatic rebalancing. The implementation makes explicit trade-offs prioritizing simplicity over optimization, providing a foundation for understanding consistency protocols in distributed storage.
+
 
 \end{document}
