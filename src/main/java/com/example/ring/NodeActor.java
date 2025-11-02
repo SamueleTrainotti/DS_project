@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static com.example.ring.NetworkSimulator.sendWithDelay;
+
 /**
  * Represents a single node in the distributed data store ring.
  *
@@ -77,10 +79,10 @@ public class NodeActor extends AbstractActor {
         System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] leaving gracefully. Transferring data...");
 
         for (DataItem item : localStore.getAll()) {
-            List<Messages.NodeInfo> responsible = findResponsibleNodes(item.getKey(), replicationFactor + 1);
+            List<Messages.NodeInfo> responsible = findResponsibleNodes(item.getKey(), replicationFactor);
             for (Messages.NodeInfo ni : responsible) {
                 if (!ni.ref.equals(getSelf())) { // Don't send to self
-                    ni.ref.tell(new Messages.StoreReplica(item), getSelf());
+                    sendWithDelay(getContext(), ni.ref,new Messages.StoreReplica(item), getSelf());
                 }
             }
         }
@@ -100,11 +102,11 @@ public class NodeActor extends AbstractActor {
 
     private void onGetTopology(Messages.GetTopology getTopology) {
         final ActorRef replyTo = getSender();
-        replyTo.tell(new Messages.UpdateMembership(new ArrayList<>(membership)), getSelf());
+        sendWithDelay(getContext(), replyTo, new Messages.UpdateMembership(new ArrayList<>(membership)), getSelf());
     }
 
     private void onGetAllData(Messages.GetAllData msg) {
-        getSender().tell(new Messages.AllDataResponse(new ArrayList<DataItem>(localStore.getAll())), getSelf());
+        sendWithDelay(getContext(), getSender(), new Messages.AllDataResponse(new ArrayList<DataItem>(localStore.getAll())), getSelf());
     }
 
     private Receive recoveringReceive() {
@@ -116,7 +118,7 @@ public class NodeActor extends AbstractActor {
     private void onRecover(Messages.RecoverNode recoverNode) {
         getContext().become(recoveringReceive());
         for (Messages.NodeInfo ni : membership) {
-            ni.ref.tell(new Messages.GetTopology(), getSelf());
+            sendWithDelay(getContext(), ni.ref, new Messages.GetTopology(), getSelf());
         }
     }
 
@@ -252,10 +254,10 @@ public class NodeActor extends AbstractActor {
                 .whenComplete((responses, ex) -> {
                     if (ex != null) {
                         // On timeout or failure to achieve quorum, reply with a not-found item.
-                        replyTo.tell(new Messages.DataItemResponse(new DataItem(0, key, null)), getSelf());
+                        sendWithDelay(getContext(), replyTo, new Messages.DataItemResponse(new DataItem(0, key, null)), getSelf());
                     } else {
                         DataItem latestItem = getLatestItem(responses, key);
-                        replyTo.tell(new Messages.DataItemResponse(latestItem), getSelf());
+                        sendWithDelay(getContext(), replyTo, new Messages.DataItemResponse(latestItem), getSelf());
                     }
                 });
     }
@@ -274,9 +276,9 @@ public class NodeActor extends AbstractActor {
         withTimeout(finalFuture.toCompletableFuture(), T.getSeconds() * 2, TimeUnit.SECONDS)
                 .whenComplete((v, ex) -> {
                     if (ex != null) {
-                        replyTo.tell(new Messages.PutAck(false), getSelf());
+                        sendWithDelay(getContext(), replyTo, new Messages.PutAck(false), getSelf());
                     } else {
-                        replyTo.tell(new Messages.PutAck(true), getSelf());
+                        sendWithDelay(getContext(), replyTo, new Messages.PutAck(true), getSelf());
                     }
                 });
     }
@@ -287,7 +289,7 @@ public class NodeActor extends AbstractActor {
     private void onStoreReplica(Messages.StoreReplica msg) {
         localStore.store(msg.item);
         System.out.println("[node " + id + " (" + Long.toUnsignedString(nodeKey) + ")] StoreReplica stored: " + msg.item.getKey() + "=" + msg.item.getValue() + " v" + msg.item.getVersion());
-        getSender().tell(new Messages.PutAck(true), getSelf());
+        sendWithDelay(getContext(), getSender(), new Messages.PutAck(true), getSelf());
     }
 
     /**
@@ -295,7 +297,7 @@ public class NodeActor extends AbstractActor {
      */
     private void onGetReplica(Messages.GetReplica msg) {
         DataItem item = localStore.get(msg.key);
-        getSender().tell(new Messages.DataItemResponse(item), getSelf());
+        sendWithDelay(getContext(), getSender(), new Messages.DataItemResponse(item), getSelf());
     }
 
     // --------------------
@@ -461,7 +463,7 @@ public class NodeActor extends AbstractActor {
                 if (item != null) {
                     // This node is no longer a replica for dataKey, so forward the item to the new responsible nodes.
                     for (Messages.NodeInfo ni : responsible) {
-                        ni.ref.tell(new Messages.StoreReplica(item), getSelf());
+                        sendWithDelay(getContext(), ni.ref, new Messages.StoreReplica(item), getSelf());
                     }
                 }
                 localStore.remove(dataKey);

@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import static com.example.ring.NetworkSimulator.sendWithDelay;
+
 /**
  * A demo application that showcases the functionality of a distributed ring data store.
  * This application demonstrates:
@@ -60,24 +62,24 @@ public class RingApp {
 
         // --- Basic PUT/GET ---
         System.out.println("\n>>> Client 1 putting K=15, V='v15'");
-        client1.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15"), REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client1, new Messages.DataPutRequest(new DataItem(0, 15L, "v15"), REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000); // Allow time for the write to complete
 
         System.out.println("\n>>> Client 1 getting K=15");
-        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client1, new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Client 2 putting K=35, V='v35' (will wrap around the ring)");
-        client2.tell(new Messages.DataPutRequest(new DataItem(0, 35L, "v35"), REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client2, new Messages.DataPutRequest(new DataItem(0, 35L, "v35"), REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Client 2 getting K=35");
-        client2.tell(new Messages.DataGetRequest(35L, REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client2, new Messages.DataGetRequest(35L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Telling a node to crash
         System.out.println("\n>>> Telling node 30 to crash");
-        nodesByKey.get(30L).tell(new Messages.CrashNode(), ActorRef.noSender());
+        sendWithDelay(system, nodesByKey.get(30L), new Messages.CrashNode(), ActorRef.noSender());
         Thread.sleep(2000);
 
         // --- Rebalancing Demo ---
@@ -85,53 +87,53 @@ public class RingApp {
         addNode(system, 35L);
         Thread.sleep(2000); // Wait a moment for rebalance to complete
         // Debug print
-        _debug_Print();
+        _debug_Print(system);
 
         System.out.println("\n>>> Client 1 getting K=15 (after adding node 25)");
-        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client1, new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Removing node 20. This should trigger rebalancing.");
-        removeNode(20L);
+        removeNode(system, 20L);
         Thread.sleep(2000); // Wait for rebalance
         // Debug print
-        _debug_Print();
+        _debug_Print(system);
 
         System.out.println("\n>>> Client 1 getting K=15 (after removing node 20)");
-        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client1, new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Update Demo ---
         System.out.println("\n>>> Client 1 updating K=15 with V='v15-updated'");
-        client1.tell(new Messages.DataPutRequest(new DataItem(0, 15L, "v15-updated"), REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client1, new Messages.DataPutRequest(new DataItem(0, 15L, "v15-updated"), REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         System.out.println("\n>>> Client 1 getting K=15 (to see updated value)");
-        client1.tell(new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client1, new Messages.DataGetRequest(15L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Get Non-Existent Key ---
         System.out.println("\n>>> Client 1 getting K=99 (should not be found)");
-        client1.tell(new Messages.DataGetRequest(99L, REPLICATION_FACTOR), ActorRef.noSender());
+        sendWithDelay(system, client1, new Messages.DataGetRequest(99L, REPLICATION_FACTOR), ActorRef.noSender());
         Thread.sleep(1000);
 
         // --- Telling node 30 to recover
         System.out.println("\n>>> Telling node 30 to recover");
-        nodesByKey.get(30L).tell(new Messages.RecoverNode(), ActorRef.noSender());
+        sendWithDelay(system, nodesByKey.get(30L), new Messages.RecoverNode(), ActorRef.noSender());
         Thread.sleep(10000);
 
         // Debug print
-        _debug_Print();
+        _debug_Print(system);
 
 
         System.out.println("\nDemo finished. Shutting down actor system.");
         system.terminate();
     }
 
-    private static void _debug_Print() {
+    private static void _debug_Print(ActorSystem system) {
         // DEBUG print
         for (ActorRef node : nodesByKey.values()) {
-            node.tell(new Messages._debug_GetStoredItems(), ActorRef.noSender());
+            sendWithDelay(system, node, new Messages._debug_GetStoredItems(), ActorRef.noSender());
         }
         try {
             Thread.sleep(5000);
@@ -147,23 +149,31 @@ public class RingApp {
         }
         ActorRef node = system.actorOf(NodeActor.props(nextId++, nodeKey, REPLICATION_FACTOR, W, R, T), "node" + Long.toUnsignedString(nodeKey));
         nodesByKey.put(nodeKey, node);
-        broadcastMembership();
+        broadcastMembership(system);
         System.out.println("[main] added node " + Long.toUnsignedString(nodeKey));
     }
 
-    private static void removeNode(long nodeKey) {
+    private static void removeNode(ActorSystem system, long nodeKey) {
         ActorRef ref = nodesByKey.remove(nodeKey);
         if (ref != null) {
-            ref.tell(new Messages.ForwardData(), ActorRef.noSender());
-            ref.tell(akka.actor.PoisonPill.getInstance(), ActorRef.noSender());
-            broadcastMembership();
+            sendWithDelay(system, ref, new Messages.Leave(), ActorRef.noSender());
+
+            // Give some time to complete the data transfer
+            // In a real system, ACK messages should be used
+            try {
+                Thread.sleep(3000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+
+            broadcastMembership(system);
             System.out.println("[main] removed node " + Long.toUnsignedString(nodeKey));
         } else {
             System.out.println("[main] no such node to remove: " + Long.toUnsignedString(nodeKey));
         }
     }
 
-    private static void broadcastMembership() {
+    private static void broadcastMembership(ActorSystem system) {
         List<Messages.NodeInfo> infos = nodesByKey.entrySet().stream()
                 .map(e -> new Messages.NodeInfo(e.getKey(), e.getValue()))
                 .collect(Collectors.toList());
@@ -171,7 +181,7 @@ public class RingApp {
         Messages.UpdateMembership membershipMessage = new Messages.UpdateMembership(new ArrayList<>(infos));
 
         for (ActorRef node : nodesByKey.values()) {
-            node.tell(membershipMessage, ActorRef.noSender());
+            sendWithDelay(system, node, membershipMessage, ActorRef.noSender());
         }
     }
 }
