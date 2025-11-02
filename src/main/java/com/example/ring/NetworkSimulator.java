@@ -26,11 +26,11 @@ public class NetworkSimulator {
 
             system.scheduler().scheduleOnce(
                     Duration.create(delay, TimeUnit.MILLISECONDS),
-                    () -> sendWithDelay(system, target, message, sender),
+                    () -> target.tell(message, sender), // Corrected: Send the message
                     system.dispatcher()
             );
         } else {
-            sendWithDelay(system, target, message, sender);
+            target.tell(message, sender); // Corrected: Send the message directly
         }
     }
 
